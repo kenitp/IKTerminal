@@ -3,9 +3,6 @@
 //! On Windows the agent listens on `\\.\pipe\openssh-ssh-agent` while the app is running.
 //! The OpenSSH Authentication Agent service must be disabled, or it owns that pipe instead.
 
-use std::path::{Path, PathBuf};
-use std::time::Duration;
-
 /// If Bitwarden is installed and not running, start it and wait briefly for the agent pipe.
 pub async fn ensure_running() {
     #[cfg(windows)]
@@ -14,18 +11,22 @@ pub async fn ensure_running() {
 
 #[cfg(windows)]
 mod windows {
-    use super::*;
     use std::os::windows::process::CommandExt;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::time::Duration;
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    /// Official Microsoft Store package. The family name does not change across versions.
+    const STORE_FAMILY: &str = "8bitSolutionsLLC.bitwardendesktop_h4e712dmw3xyy";
+    const STORE_AUMID: &str = "8bitSolutionsLLC.bitwardendesktop_h4e712dmw3xyy!bitwardendesktop";
 
     pub async fn ensure() {
         if process_running() {
             return;
         }
-        let Some(exe) = find_exe() else { return };
-        if Command::new(&exe).spawn().is_err() {
+        if !start() {
             return;
         }
         for _ in 0..30 {
@@ -34,6 +35,31 @@ mod windows {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
+    }
+
+    fn start() -> bool {
+        if let Some(exe) = find_exe() {
+            return Command::new(exe).spawn().is_ok();
+        }
+        if !store_registered() {
+            return false;
+        }
+        // Packaged apps do not start from Bitwarden.exe. Activate the registered app id.
+        Command::new("explorer.exe")
+            .arg(format!(r"shell:AppsFolder\{STORE_AUMID}"))
+            .spawn()
+            .is_ok()
+    }
+
+    fn store_registered() -> bool {
+        let key = format!(
+            r"HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\SystemAppData\{STORE_FAMILY}"
+        );
+        Command::new("reg")
+            .args(["query", &key])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .is_ok_and(|output| output.status.success())
     }
 
     fn process_running() -> bool {

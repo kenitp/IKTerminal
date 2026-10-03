@@ -54,7 +54,7 @@ OS のタイトルバーは出さない。タブバーの空きをドラッグ�
 - ホスト鍵は `~/.ssh/known_hosts` で検証する。
   - 未登録の場合はフィンガープリントを表示して確認し、承認されたら登録する。
   - 鍵が変更されている場合は接続を拒否する。
-- 設定「Bitwarden」が有効 (既定) で Bitwarden がインストール済みかつ未起動のとき、認証の前にデスクトップアプリを起動し、エージェントの名前付きパイプが出るまで少し待つ。インストールされていない場合は何もしない。Windows ではエージェントは `\\.\pipe\openssh-ssh-agent` を使うため、OpenSSH Authentication Agent サービスは無効にしておく。
+- 設定「Bitwarden」が有効 (既定) で Bitwarden がインストール済みかつ未起動のとき、認証の前にデスクトップアプリを起動し、エージェントの名前付きパイプが出るまで少し待つ。インストーラ版は `Bitwarden.exe`、Microsoft Store 版は登録されたアプリ ID で起動する。どちらも無い場合は何もしない。Windows ではエージェントは `\\.\pipe\openssh-ssh-agent` を使うため、OpenSSH Authentication Agent サービスは無効にしておく。
 - 認証は次の順で試行する。
   1. SSH エージェント (OpenSSH エージェント、Bitwarden のエージェント、Pageant)。`IdentitiesOnly yes` の場合は使わない。
   2. 鍵ファイル (`IdentityFile`、未指定時は `id_ed25519`、`id_ecdsa`、`id_rsa`)。暗号化鍵はパスフレーズを入力する。
