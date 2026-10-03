@@ -144,7 +144,8 @@ pub fn show(ui: &mut Ui, bar: Bar<'_>) -> Option<TabAction> {
         },
     );
     if let Some(id) = drag_started {
-        ui.ctx().data_mut(|data| data.insert_temp(drag_key(ui), id));
+        let key = drag_key(ui);
+        ui.ctx().data_mut(|data| data.insert_temp(key, id));
         if action.is_none()
             && let Some(index) = tabs.iter().position(|tab| tab.id == id)
         {
@@ -189,12 +190,14 @@ fn track_drag(ui: &Ui, tabs: &[TabInfo], centers: &[f32]) -> Option<TabAction> {
     };
     let pos = ui.input(|i| i.pointer.latest_pos());
     let down = ui.input(|i| i.pointer.any_down());
-    if pos.is_none() {
+    let window = ui.ctx().viewport_rect();
+    // Windows keeps the pointer captured, so leaving the window reports outside positions.
+    let Some(pos) = pos.filter(|pos| window.contains(*pos)) else {
         ui.ctx().data_mut(|data| {
             data.remove_temp::<u64>(key);
         });
-        return (tabs.len() > 1).then_some(TabAction::Detach(from));
-    }
+        return (down && tabs.len() > 1).then_some(TabAction::Detach(from));
+    };
     if !down {
         ui.ctx().data_mut(|data| {
             data.remove_temp::<u64>(key);
@@ -202,16 +205,12 @@ fn track_drag(ui: &Ui, tabs: &[TabInfo], centers: &[f32]) -> Option<TabAction> {
         return None;
     }
     ui.ctx().data_mut(|data| data.insert_temp(key, dragging));
-    let pos = pos?;
     drag_neighbor(from, pos.x, centers).map(|to| TabAction::Move { from, to })
 }
 
 fn finish_window_drag(ui: &Ui, response: Response) {
-    if ui
-        .ctx()
-        .data(|data| data.get_temp::<u64>(drag_key(ui)))
-        .is_some()
-    {
+    let key = drag_key(ui);
+    if ui.ctx().data(|data| data.get_temp::<u64>(key)).is_some() {
         return;
     }
     if response.double_clicked() {
