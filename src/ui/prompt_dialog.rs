@@ -25,7 +25,7 @@ impl PromptDialog {
         let Some(prompt) = &self.current else { return };
 
         let mut answer: Option<Option<String>> = None;
-        egui::Modal::new(egui::Id::new("prompt")).show(ctx, |ui| {
+        egui::Modal::new(egui::Id::new(("prompt", ctx.viewport_id()))).show(ctx, |ui| {
             ui.set_width(420.0);
             ui.heading(&prompt.title);
             ui.add_space(4.0);

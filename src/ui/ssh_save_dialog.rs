@@ -70,7 +70,7 @@ impl SshSaveDialog {
 
     pub fn show(&mut self, ctx: &egui::Context) -> Option<SshSaveResult> {
         let mut result = None;
-        egui::Modal::new(egui::Id::new("ssh-save")).show(ctx, |ui| {
+        egui::Modal::new(egui::Id::new(("ssh-save", ctx.viewport_id()))).show(ctx, |ui| {
             ui.set_width(420.0);
             ui.heading("SSH config に追加");
             ui.add_space(4.0);

@@ -3,6 +3,7 @@
 mod app;
 mod backend;
 mod frame;
+mod instance;
 mod launch;
 mod session;
 mod settings;
@@ -11,6 +12,15 @@ mod terminal;
 mod ui;
 
 fn main() -> eframe::Result {
+    let launch = launch::from_args();
+    let incoming = match instance::attach(&launch) {
+        instance::Role::Forwarded => return Ok(()),
+        instance::Role::Primary(incoming) => incoming,
+    };
+    let (directory, notice) = match launch {
+        Ok(dir) => (dir, None),
+        Err(error) => (None, Some(error)),
+    };
     let icon = egui::IconData {
         rgba: include_bytes!("../assets/icon-64.rgba").to_vec(),
         width: 64,
@@ -30,12 +40,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "IkTerminal",
         options,
-        Box::new(|cc| {
-            let (directory, notice) = match launch::from_args() {
-                Ok(dir) => (dir, None),
-                Err(error) => (None, Some(error)),
-            };
-            Ok(Box::new(app::App::new(cc, directory, notice)))
-        }),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, directory, notice, incoming)))),
     )
 }

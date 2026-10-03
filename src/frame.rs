@@ -5,7 +5,7 @@
 //! while that bit is set. The bit is cleared after startup. winit writes it back when
 //! it refreshes window styles, so it is cleared again whenever it reappears.
 
-pub fn install(cc: &eframe::CreationContext<'_>) -> Option<isize> {
+pub fn install(cc: &eframe::CreationContext<'_>) {
     #[cfg(windows)]
     {
         use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
@@ -13,26 +13,46 @@ pub fn install(cc: &eframe::CreationContext<'_>) -> Option<isize> {
         if let Ok(handle) = cc.window_handle()
             && let RawWindowHandle::Win32(win) = handle.as_raw()
         {
-            let hwnd = win.hwnd.get();
-            clear_caption(hwnd);
-            return Some(hwnd);
+            clear_caption(win.hwnd.get());
         }
-        None
     }
     #[cfg(not(windows))]
-    {
-        let _ = cc;
-        None
-    }
+    let _ = cc;
 }
 
-pub fn enforce(hwnd: Option<isize>) {
+/// Clears `WS_CAPTION` on every winit window of this thread, including ones split off later.
+pub fn enforce() {
     #[cfg(windows)]
-    if let Some(hwnd) = hwnd {
-        clear_caption(hwnd);
+    clear_thread_captions();
+}
+
+#[cfg(windows)]
+fn clear_thread_captions() {
+    unsafe extern "system" {
+        fn EnumThreadWindows(
+            thread_id: u32,
+            callback: unsafe extern "system" fn(isize, isize) -> i32,
+            param: isize,
+        ) -> i32;
+        fn GetCurrentThreadId() -> u32;
+        fn GetClassNameW(hwnd: isize, class: *mut u16, max: i32) -> i32;
     }
-    #[cfg(not(windows))]
-    let _ = hwnd;
+
+    unsafe extern "system" fn each(hwnd: isize, _: isize) -> i32 {
+        let mut buf = [0u16; 64];
+        let len = unsafe { GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+        if len > 0 {
+            let name = String::from_utf16_lossy(&buf[..len as usize]);
+            if name == "Window Class" {
+                clear_caption(hwnd);
+            }
+        }
+        1
+    }
+
+    unsafe {
+        EnumThreadWindows(GetCurrentThreadId(), each, 0);
+    }
 }
 
 #[cfg(windows)]

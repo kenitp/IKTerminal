@@ -1,6 +1,8 @@
 //! Top bar: sidebar toggle, tabs, new-tab menu, window controls.
 
-use egui::{Align2, FontId, Id, Layout, PointerButton, Rect, Sense, Stroke, Ui, UiBuilder, Vec2};
+use egui::{
+    Align2, FontId, Id, Layout, PointerButton, Rect, Response, Sense, Stroke, Ui, UiBuilder, Vec2,
+};
 
 use super::theme;
 use super::widgets::flat_button;
@@ -9,6 +11,7 @@ use crate::sshconfig::HostEntry;
 use crate::terminal::Status;
 
 pub struct TabInfo {
+    pub id: u64,
     pub title: String,
     pub status: Status,
 }
@@ -16,6 +19,12 @@ pub struct TabInfo {
 pub enum TabAction {
     Select(usize),
     Close(usize),
+    Move {
+        from: usize,
+        to: usize,
+    },
+    /// The pointer left the window while dragging this tab.
+    Detach(usize),
     OpenLocal(usize),
     OpenSsh(usize),
     OpenSerial,
@@ -51,9 +60,15 @@ pub fn show(ui: &mut Ui, bar: Bar<'_>) -> Option<TabAction> {
     let available = ui.available_rect_before_wrap();
     let bar = Rect::from_min_size(available.min, Vec2::new(available.width(), BAR_HEIGHT));
     ui.allocate_rect(bar, Sense::hover());
-    window_drag(ui, bar);
+    let window_drag = ui.interact(
+        bar,
+        Id::new(("window-drag", ui.ctx().viewport_id())),
+        Sense::click_and_drag(),
+    );
 
     let mut action = None;
+    let mut centers = Vec::new();
+    let mut drag_started = None;
     ui.scope_builder(
         UiBuilder::new()
             .max_rect(bar)
@@ -70,9 +85,15 @@ pub fn show(ui: &mut Ui, bar: Bar<'_>) -> Option<TabAction> {
             let tabs_width = (ui.available_width() - right_width - 36.0).max(80.0);
             let tab_width = (tabs_width / tabs.len().max(1) as f32).clamp(90.0, TAB_MAX_WIDTH);
             ui.spacing_mut().item_spacing.x = 4.0;
+            let can_drag = tabs.len() > 1;
             for (i, tab) in tabs.iter().enumerate() {
-                if let Some(a) = tab_widget(ui, i, tab, i == active, tab_width) {
-                    action = Some(a);
+                let painted = tab_widget(ui, i, tab, i == active, tab_width, can_drag);
+                centers.push(painted.rect.center().x);
+                if painted.drag_started {
+                    drag_started = Some(tab.id);
+                }
+                if let Some(next) = painted.action {
+                    action = Some(next);
                 }
             }
             let plus = flat_button(ui, "+").on_hover_text("新しいタブ (Ctrl+Shift+T)");
@@ -122,11 +143,77 @@ pub fn show(ui: &mut Ui, bar: Bar<'_>) -> Option<TabAction> {
             });
         },
     );
+    if let Some(id) = drag_started {
+        ui.ctx().data_mut(|data| data.insert_temp(drag_key(ui), id));
+        if action.is_none()
+            && let Some(index) = tabs.iter().position(|tab| tab.id == id)
+        {
+            action = Some(TabAction::Select(index));
+        }
+    }
+    if let Some(drag) = track_drag(ui, tabs, &centers) {
+        action = Some(drag);
+    }
+    finish_window_drag(ui, window_drag);
     action
 }
 
-fn window_drag(ui: &mut Ui, bar: Rect) {
-    let response = ui.interact(bar, Id::new("window-drag"), Sense::click_and_drag());
+/// Neighbor to swap with while `pointer_x` is dragging the tab at `from`.
+pub(crate) fn drag_neighbor(from: usize, pointer_x: f32, centers: &[f32]) -> Option<usize> {
+    if let Some(next) = centers.get(from + 1)
+        && pointer_x > *next
+    {
+        return Some(from + 1);
+    }
+    if from > 0
+        && let Some(prev) = centers.get(from - 1)
+        && pointer_x < *prev
+    {
+        return Some(from - 1);
+    }
+    None
+}
+
+fn drag_key(ui: &Ui) -> Id {
+    Id::new(("tab-drag", ui.ctx().viewport_id()))
+}
+
+fn track_drag(ui: &Ui, tabs: &[TabInfo], centers: &[f32]) -> Option<TabAction> {
+    let key = drag_key(ui);
+    let dragging = ui.ctx().data(|data| data.get_temp::<u64>(key))?;
+    let Some(from) = tabs.iter().position(|tab| tab.id == dragging) else {
+        ui.ctx().data_mut(|data| {
+            data.remove_temp::<u64>(key);
+        });
+        return None;
+    };
+    let pos = ui.input(|i| i.pointer.latest_pos());
+    let down = ui.input(|i| i.pointer.any_down());
+    if pos.is_none() {
+        ui.ctx().data_mut(|data| {
+            data.remove_temp::<u64>(key);
+        });
+        return (tabs.len() > 1).then_some(TabAction::Detach(from));
+    }
+    if !down {
+        ui.ctx().data_mut(|data| {
+            data.remove_temp::<u64>(key);
+        });
+        return None;
+    }
+    ui.ctx().data_mut(|data| data.insert_temp(key, dragging));
+    let pos = pos?;
+    drag_neighbor(from, pos.x, centers).map(|to| TabAction::Move { from, to })
+}
+
+fn finish_window_drag(ui: &Ui, response: Response) {
+    if ui
+        .ctx()
+        .data(|data| data.get_temp::<u64>(drag_key(ui)))
+        .is_some()
+    {
+        return;
+    }
     if response.double_clicked() {
         let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
         ui.ctx()
@@ -207,22 +294,39 @@ fn caption_button(ui: &mut Ui, glyph: &str, close: bool) -> egui::Response {
     response
 }
 
+struct TabPaint {
+    action: Option<TabAction>,
+    rect: Rect,
+    drag_started: bool,
+}
+
 fn tab_widget(
     ui: &mut Ui,
     index: usize,
     tab: &TabInfo,
     active: bool,
     width: f32,
-) -> Option<TabAction> {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, TAB_HEIGHT), Sense::click());
+    can_drag: bool,
+) -> TabPaint {
+    let sense = if can_drag {
+        Sense::click_and_drag()
+    } else {
+        Sense::click()
+    };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, TAB_HEIGHT), Sense::hover());
+    let response = ui.interact(
+        rect,
+        Id::new(("tab", ui.ctx().viewport_id(), tab.id)),
+        sense,
+    );
     let close_rect = Rect::from_center_size(
         egui::pos2(rect.max.x - 14.0, rect.center().y),
         Vec2::splat(18.0),
     );
     let close = ui.interact(
         close_rect,
-        ui.id().with(("tab-close", index)),
-        Sense::click(),
+        Id::new(("tab-close", ui.ctx().viewport_id(), tab.id)),
+        Sense::click_and_drag(),
     );
     let painter = ui.painter();
 
@@ -266,12 +370,40 @@ fn tab_widget(
         theme::TEXT_DIM,
     );
 
-    if close.clicked() || response.middle_clicked() {
+    let clicked_close = close.clicked();
+    let middle = response.middle_clicked();
+    let clicked = response.clicked();
+    let drag_started = can_drag && response.drag_started() && !close.drag_started();
+    let response = response.on_hover_text(&tab.title);
+    if can_drag {
+        response.on_hover_cursor(egui::CursorIcon::Grab);
+    }
+    let action = if clicked_close || middle {
         Some(TabAction::Close(index))
-    } else if response.clicked() {
+    } else if clicked {
         Some(TabAction::Select(index))
     } else {
-        response.on_hover_text(&tab.title);
         None
+    };
+    TabPaint {
+        action,
+        rect,
+        drag_started,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::drag_neighbor;
+
+    #[test]
+    fn drag_swaps_with_the_neighbor_past_its_center() {
+        let centers = [50.0, 150.0, 250.0];
+        assert_eq!(drag_neighbor(0, 160.0, &centers), Some(1));
+        assert_eq!(drag_neighbor(0, 140.0, &centers), None);
+        assert_eq!(drag_neighbor(1, 40.0, &centers), Some(0));
+        assert_eq!(drag_neighbor(1, 260.0, &centers), Some(2));
+        assert_eq!(drag_neighbor(2, 140.0, &centers), Some(1));
+        assert_eq!(drag_neighbor(2, 160.0, &centers), None);
     }
 }

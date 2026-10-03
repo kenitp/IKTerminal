@@ -2,10 +2,16 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 
-use egui::{Frame, Key, KeyboardShortcut, Margin, Modifiers, RichText, Ui};
+use egui::{
+    Frame, Key, KeyboardShortcut, Margin, Modifiers, RichText, Ui, ViewportBuilder,
+    ViewportCommand, ViewportId,
+};
 
 use crate::backend::local::{self, ShellSpec};
+use crate::instance::{self, Request};
 use crate::session::{Kind, Session};
 use crate::settings::Settings;
 use crate::sshconfig::{self, HostEntry, SshCommand, SshConfig};
@@ -29,32 +35,72 @@ const PREV_TAB: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::CTRL.plus(Modifiers::SHIFT), Key::Tab);
 const NEXT_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::Tab);
 
-pub struct App {
-    settings: Settings,
-    ssh_config: SshConfig,
-    hosts: Vec<HostEntry>,
-    shells: Vec<ShellSpec>,
+struct Spawn {
+    pos: Option<egui::Pos2>,
+    size: egui::Vec2,
+}
+
+struct Desk {
+    id: u64,
     sessions: Vec<Session>,
     active: usize,
-    next_id: u64,
     sftp_views: HashMap<u64, SftpView>,
     sidebar: Sidebar,
     show_sidebar: bool,
     show_sftp: bool,
-    editor: Option<ConfigEditor>,
-    settings_dialog: Option<SettingsDialog>,
     serial_dialog: Option<SerialDialog>,
     prompt: PromptDialog,
     ssh_save: Option<SshSaveDialog>,
-    ssh_dismissed: HashSet<String>,
     notice: Option<String>,
     focus_terminal: bool,
     new_tab_menu: bool,
     /// Working directory for local shells opened in this window. `None` is the home directory.
     directory: Option<PathBuf>,
     window_title: String,
-    /// Native window handle used to keep the OS caption hidden. Windows only.
-    hwnd: Option<isize>,
+    spawn: Option<Spawn>,
+    close: bool,
+}
+
+impl Desk {
+    fn new(id: u64, directory: Option<PathBuf>, notice: Option<String>) -> Self {
+        Self {
+            id,
+            sessions: Vec::new(),
+            active: 0,
+            sftp_views: HashMap::new(),
+            sidebar: Sidebar::default(),
+            show_sidebar: false,
+            show_sftp: false,
+            serial_dialog: None,
+            prompt: PromptDialog::default(),
+            ssh_save: None,
+            notice,
+            focus_terminal: true,
+            new_tab_menu: false,
+            directory,
+            window_title: String::new(),
+            spawn: None,
+            close: false,
+        }
+    }
+}
+
+pub struct App {
+    settings: Settings,
+    ssh_config: SshConfig,
+    hosts: Vec<HostEntry>,
+    shells: Vec<ShellSpec>,
+    desks: Vec<Desk>,
+    next_session: u64,
+    next_desk: u64,
+    focused: u64,
+    editor: Option<ConfigEditor>,
+    editor_desk: u64,
+    settings_dialog: Option<SettingsDialog>,
+    settings_desk: u64,
+    ssh_dismissed: HashSet<String>,
+    incoming: Receiver<Request>,
+    icon: Arc<egui::IconData>,
 }
 
 impl App {
@@ -62,9 +108,12 @@ impl App {
         cc: &eframe::CreationContext<'_>,
         directory: Option<PathBuf>,
         notice: Option<String>,
+        incoming: Receiver<Request>,
     ) -> Self {
         let settings = Settings::load();
-        let hwnd = crate::frame::install(cc);
+        crate::frame::install(cc);
+        let ctx = cc.egui_ctx.clone();
+        instance::bind_wake(move || ctx.request_repaint());
         theme::apply(&cc.egui_ctx);
         fonts::install(&cc.egui_ctx, &settings);
         let ssh_config = SshConfig::load_default();
@@ -73,28 +122,24 @@ impl App {
             ssh_config,
             settings,
             shells: local::detect_shells(),
-            sessions: Vec::new(),
-            active: 0,
-            next_id: 0,
-            sftp_views: HashMap::new(),
-            sidebar: Sidebar::default(),
-            show_sidebar: true,
-            show_sftp: false,
+            desks: vec![Desk::new(0, directory, notice)],
+            next_session: 0,
+            next_desk: 1,
+            focused: 0,
             editor: None,
+            editor_desk: 0,
             settings_dialog: None,
-            serial_dialog: None,
-            prompt: PromptDialog::default(),
-            ssh_save: None,
+            settings_desk: 0,
             ssh_dismissed: HashSet::new(),
-            notice,
-            focus_terminal: true,
-            new_tab_menu: false,
-            directory,
-            window_title: String::new(),
-            hwnd,
+            incoming,
+            icon: Arc::new(egui::IconData {
+                rgba: include_bytes!("../assets/icon-64.rgba").to_vec(),
+                width: 64,
+                height: 64,
+            }),
         };
         if let Some(shell) = app.default_shell() {
-            app.open_shell(&cc.egui_ctx, &shell);
+            app.open_shell(&cc.egui_ctx, 0, &shell);
         }
         app
     }
@@ -103,76 +148,121 @@ impl App {
         ShellSpec::from_command_line(&self.settings.shell).or_else(|| self.shells.first().cloned())
     }
 
-    fn next_id(&mut self) -> u64 {
-        self.next_id += 1;
-        self.next_id
+    fn next_session(&mut self) -> u64 {
+        self.next_session += 1;
+        self.next_session
     }
 
-    fn push_session(&mut self, session: Session) {
-        self.sessions.push(session);
-        self.active = self.sessions.len() - 1;
-        self.focus_terminal = true;
+    fn desk_index(&self, id: u64) -> usize {
+        self.desks
+            .iter()
+            .position(|desk| desk.id == id && !desk.close)
+            .unwrap_or(0)
     }
 
-    fn open_shell(&mut self, ctx: &egui::Context, shell: &ShellSpec) {
-        let id = self.next_id();
-        match Session::local(ctx, &self.settings, id, shell, self.directory.as_deref()) {
-            Ok(s) => self.push_session(s),
-            Err(e) => self.notice = Some(format!("{} を起動できません: {e}", shell.program)),
+    fn push_session(&mut self, index: usize, session: Session) {
+        let desk = &mut self.desks[index];
+        desk.sessions.push(session);
+        desk.active = desk.sessions.len() - 1;
+        desk.focus_terminal = true;
+    }
+
+    fn open_shell(&mut self, ctx: &egui::Context, index: usize, shell: &ShellSpec) {
+        let directory = self.desks[index].directory.clone();
+        let id = self.next_session();
+        match Session::local(ctx, &self.settings, id, shell, directory.as_deref()) {
+            Ok(session) => self.push_session(index, session),
+            Err(e) => {
+                self.desks[index].notice = Some(format!("{} を起動できません: {e}", shell.program));
+            }
         }
     }
 
-    fn connect(&mut self, ctx: &egui::Context, target: &str) {
-        let id = self.next_id();
-        self.push_session(Session::ssh(
-            ctx,
-            &self.settings,
-            id,
-            &self.ssh_config,
-            target,
-        ));
+    fn open_default(&mut self, ctx: &egui::Context, index: usize) {
+        if let Some(shell) = self.default_shell() {
+            self.open_shell(ctx, index, &shell);
+        }
     }
 
-    fn reconnect(&mut self, ctx: &egui::Context, index: usize) {
-        let Kind::Ssh { target, .. } = &self.sessions[index].kind else {
+    fn connect(&mut self, ctx: &egui::Context, index: usize, target: &str) {
+        let id = self.next_session();
+        let session = Session::ssh(ctx, &self.settings, id, &self.ssh_config, target);
+        self.push_session(index, session);
+    }
+
+    fn reconnect(&mut self, ctx: &egui::Context, index: usize, tab: usize) {
+        let Kind::Ssh { target, .. } = &self.desks[index].sessions[tab].kind else {
             return;
         };
         let target = target.clone();
-        let id = self.next_id();
+        let id = self.next_session();
         let old = std::mem::replace(
-            &mut self.sessions[index],
+            &mut self.desks[index].sessions[tab],
             Session::ssh(ctx, &self.settings, id, &self.ssh_config, &target),
         );
-        self.sftp_views.remove(&old.id);
-        self.focus_terminal = true;
+        self.desks[index].sftp_views.remove(&old.id);
+        self.desks[index].focus_terminal = true;
     }
 
-    fn reopen_serial(&mut self, ctx: &egui::Context, index: usize) {
-        let Kind::Serial { port, baud } = &self.sessions[index].kind else {
+    fn reopen_serial(&mut self, ctx: &egui::Context, index: usize, tab: usize) {
+        let Kind::Serial { port, baud } = &self.desks[index].sessions[tab].kind else {
             return;
         };
         let port = port.clone();
         let baud = *baud;
-        let id = self.next_id();
+        let id = self.next_session();
         match Session::serial(ctx, &self.settings, id, &port, baud) {
             Ok(session) => {
-                self.sessions[index] = session;
-                self.focus_terminal = true;
+                self.desks[index].sessions[tab] = session;
+                self.desks[index].focus_terminal = true;
             }
-            Err(e) => self.notice = Some(format!("{port} を開けません: {e}")),
+            Err(e) => {
+                self.desks[index].notice = Some(format!("{port} を開けません: {e}"));
+            }
         }
     }
 
-    fn close(&mut self, index: usize) {
-        if index >= self.sessions.len() {
+    fn close_tab(&mut self, index: usize, tab: usize) {
+        let Some(session) = take_session(&mut self.desks[index], tab) else {
+            return;
+        };
+        self.desks[index].sftp_views.remove(&session.id);
+        if self.desks[index].id != 0 && self.desks[index].sessions.is_empty() {
+            self.desks[index].close = true;
+        }
+    }
+
+    fn move_tab(&mut self, index: usize, from: usize, to: usize) {
+        let desk = &mut self.desks[index];
+        if from == to || from >= desk.sessions.len() || to >= desk.sessions.len() {
             return;
         }
-        let session = self.sessions.remove(index);
-        self.sftp_views.remove(&session.id);
-        if self.active >= self.sessions.len() {
-            self.active = self.sessions.len().saturating_sub(1);
+        let session = desk.sessions.remove(from);
+        desk.sessions.insert(to, session);
+        desk.active = to;
+        desk.focus_terminal = true;
+    }
+
+    fn detach(&mut self, index: usize, tab: usize, spawn: Spawn) {
+        if self.desks[index].sessions.len() < 2 {
+            return;
         }
-        self.focus_terminal = true;
+        let Some(session) = take_session(&mut self.desks[index], tab) else {
+            return;
+        };
+        let view = self.desks[index].sftp_views.remove(&session.id);
+        let directory = self.desks[index].directory.clone();
+        let id = self.next_desk;
+        self.next_desk += 1;
+        let mut desk = Desk::new(id, directory, None);
+        desk.spawn = Some(spawn);
+        let session_id = session.id;
+        desk.sessions.push(session);
+        if let Some(view) = view {
+            desk.sftp_views.insert(session_id, view);
+        }
+        self.desks.push(desk);
+        self.focused = id;
     }
 
     fn reload_config(&mut self) {
@@ -180,14 +270,46 @@ impl App {
         self.hosts = self.ssh_config.hosts();
     }
 
-    fn open_editor(&mut self, focus: Option<&str>) {
+    fn open_editor(&mut self, index: usize, focus: Option<&str>) {
         match ConfigEditor::open(focus) {
-            Ok(e) => self.editor = Some(e),
-            Err(e) => self.notice = Some(e),
+            Ok(editor) => {
+                self.editor_desk = self.desks[index].id;
+                self.editor = Some(editor);
+            }
+            Err(error) => self.desks[index].notice = Some(error),
         }
     }
 
-    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+    fn poll_launches(&mut self, ctx: &egui::Context) {
+        let mut focus_id = None;
+        while let Ok(request) = self.incoming.try_recv() {
+            let index = self.desk_index(self.focused);
+            match request {
+                Request::Home => {
+                    self.desks[index].directory = None;
+                    self.open_default(ctx, index);
+                }
+                Request::Dir(path) => {
+                    if path.is_dir() {
+                        self.desks[index].directory = Some(path);
+                        self.open_default(ctx, index);
+                    } else {
+                        self.desks[index].notice =
+                            Some(format!("{} はフォルダではありません", path.display()));
+                    }
+                }
+                Request::Notice(message) => self.desks[index].notice = Some(message),
+            }
+            focus_id = Some(self.desks[index].id);
+        }
+        if let Some(id) = focus_id {
+            let viewport = viewport_id(id);
+            ctx.send_viewport_cmd_to(viewport, ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd_to(viewport, ViewportCommand::Focus);
+        }
+    }
+
+    fn handle_shortcuts(&mut self, ctx: &egui::Context, index: usize) {
         let (new_tab, close_tab, prev, next) = ctx.input_mut(|i| {
             (
                 i.consume_shortcut(&NEW_TAB),
@@ -197,37 +319,38 @@ impl App {
             )
         });
         if new_tab {
-            self.new_tab_menu = !self.new_tab_menu;
+            self.desks[index].new_tab_menu = !self.desks[index].new_tab_menu;
         }
         if close_tab {
-            self.close(self.active);
+            self.close_tab(index, self.desks[index].active);
         }
-        let n = self.sessions.len();
+        let n = self.desks[index].sessions.len();
         if n > 0 && (prev || next) {
-            self.active = if next {
-                (self.active + 1) % n
+            let active = &mut self.desks[index].active;
+            *active = if next {
+                (*active + 1) % n
             } else {
-                (self.active + n - 1) % n
+                (*active + n - 1) % n
             };
-            self.focus_terminal = true;
+            self.desks[index].focus_terminal = true;
         }
     }
 
     /// Local tabs close when their shell exits; SSH tabs stay to offer reconnecting.
-    fn close_exited_local(&mut self) {
-        let exited: Vec<usize> = (0..self.sessions.len())
-            .filter(|&i| {
-                matches!(self.sessions[i].kind, Kind::Local)
-                    && matches!(self.sessions[i].status(), Status::Exited(_))
+    fn close_exited_local(&mut self, index: usize) {
+        let exited: Vec<usize> = (0..self.desks[index].sessions.len())
+            .filter(|&tab| {
+                matches!(self.desks[index].sessions[tab].kind, Kind::Local)
+                    && matches!(self.desks[index].sessions[tab].status(), Status::Exited(_))
             })
             .collect();
-        for i in exited.into_iter().rev() {
-            self.close(i);
+        for tab in exited.into_iter().rev() {
+            self.close_tab(index, tab);
         }
     }
 
     /// Dropped files are uploaded via SFTP when the panel is open, otherwise their paths are typed.
-    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+    fn handle_dropped_files(&mut self, ctx: &egui::Context, index: usize) {
         let paths: Vec<_> = ctx.input(|i| {
             i.raw
                 .dropped_files
@@ -235,10 +358,15 @@ impl App {
                 .filter_map(|f| f.path.clone())
                 .collect()
         });
-        let Some(session) = self.sessions.get(self.active).filter(|_| !paths.is_empty()) else {
+        let Some(session) = self.desks[index]
+            .sessions
+            .get(self.desks[index].active)
+            .filter(|_| !paths.is_empty())
+        else {
             return;
         };
-        match session.sftp().filter(|s| self.show_sftp && s.is_ready()) {
+        let show_sftp = self.desks[index].show_sftp;
+        match session.sftp().filter(|s| show_sftp && s.is_ready()) {
             Some(sftp) => sftp.upload(paths),
             None => {
                 let text: Vec<String> = paths
@@ -257,111 +385,137 @@ impl App {
         }
     }
 
-    fn update_title(&mut self, ctx: &egui::Context) {
-        let title = match self.sessions.get(self.active) {
-            Some(s) => format!("{} - IkTerminal", s.title()),
+    fn update_title(&mut self, ctx: &egui::Context, index: usize) {
+        let title = match self.desks[index].sessions.get(self.desks[index].active) {
+            Some(session) => format!("{} - IkTerminal", session.title()),
             None => "IkTerminal".to_owned(),
         };
-        if title != self.window_title {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
-            self.window_title = title;
+        if title != self.desks[index].window_title {
+            ctx.send_viewport_cmd(ViewportCommand::Title(title.clone()));
+            self.desks[index].window_title = title;
         }
     }
 
-    fn tab_bar(&mut self, ui: &mut Ui) {
+    fn tab_bar(&mut self, ui: &mut Ui, index: usize) {
         let ctx = ui.ctx().clone();
-        let tabs: Vec<TabInfo> = self
+        let tabs: Vec<TabInfo> = self.desks[index]
             .sessions
             .iter()
-            .map(|s| TabInfo {
-                title: s.title(),
-                status: s.status(),
+            .map(|session| TabInfo {
+                id: session.id,
+                title: session.title(),
+                status: session.status(),
             })
             .collect();
-        let sftp_available = self
+        let sftp_available = self.desks[index]
             .sessions
-            .get(self.active)
-            .is_some_and(|s| s.sftp().is_some());
+            .get(self.desks[index].active)
+            .is_some_and(|session| session.sftp().is_some());
         let frame = Frame::new().fill(theme::BG);
-        egui::Panel::top("tabbar").frame(frame).show(ui, |ui| {
-            match tabbar::show(
-                ui,
-                tabbar::Bar {
-                    tabs: &tabs,
-                    active: self.active,
-                    sftp_available,
-                    sftp_open: self.show_sftp && sftp_available,
-                    shells: &self.shells,
-                    hosts: &self.hosts,
-                    menu_open: &mut self.new_tab_menu,
-                },
-            ) {
-                Some(TabAction::Select(i)) => {
-                    self.active = i;
-                    self.focus_terminal = true;
-                }
-                Some(TabAction::Close(i)) => self.close(i),
-                Some(TabAction::OpenLocal(i)) => {
-                    if let Some(shell) = self.shells.get(i).cloned() {
-                        self.open_shell(&ctx, &shell);
+        egui::Panel::top(panel_id(ui, "tabbar"))
+            .frame(frame)
+            .show(ui, |ui| {
+                match tabbar::show(
+                    ui,
+                    tabbar::Bar {
+                        tabs: &tabs,
+                        active: self.desks[index].active,
+                        sftp_available,
+                        sftp_open: self.desks[index].show_sftp && sftp_available,
+                        shells: &self.shells,
+                        hosts: &self.hosts,
+                        menu_open: &mut self.desks[index].new_tab_menu,
+                    },
+                ) {
+                    Some(TabAction::Select(tab)) => {
+                        self.desks[index].active = tab;
+                        self.desks[index].focus_terminal = true;
                     }
-                }
-                Some(TabAction::OpenSsh(i)) => {
-                    if let Some(host) = self.hosts.get(i) {
-                        let alias = host.alias.clone();
-                        self.connect(&ctx, &alias);
+                    Some(TabAction::Close(tab)) => self.close_tab(index, tab),
+                    Some(TabAction::Move { from, to }) => self.move_tab(index, from, to),
+                    Some(TabAction::Detach(tab)) => {
+                        let spawn = detach_spawn(ui);
+                        self.detach(index, tab, spawn);
+                        ui.ctx().request_repaint();
                     }
+                    Some(TabAction::OpenLocal(i)) => {
+                        if let Some(shell) = self.shells.get(i).cloned() {
+                            self.open_shell(&ctx, index, &shell);
+                        }
+                    }
+                    Some(TabAction::OpenSsh(i)) => {
+                        if let Some(host) = self.hosts.get(i) {
+                            let alias = host.alias.clone();
+                            self.connect(&ctx, index, &alias);
+                        }
+                    }
+                    Some(TabAction::OpenSerial) => {
+                        self.desks[index].serial_dialog = Some(SerialDialog::new());
+                    }
+                    Some(TabAction::ToggleSidebar) => {
+                        self.desks[index].show_sidebar = !self.desks[index].show_sidebar;
+                    }
+                    Some(TabAction::ToggleSftp) => {
+                        self.desks[index].show_sftp = !self.desks[index].show_sftp;
+                    }
+                    Some(TabAction::Settings) => {
+                        self.settings_desk = self.desks[index].id;
+                        self.settings_dialog = Some(SettingsDialog::new(&self.settings));
+                    }
+                    None => {}
                 }
-                Some(TabAction::OpenSerial) => {
-                    self.serial_dialog = Some(SerialDialog::new());
-                }
-                Some(TabAction::ToggleSidebar) => self.show_sidebar = !self.show_sidebar,
-                Some(TabAction::ToggleSftp) => self.show_sftp = !self.show_sftp,
-                Some(TabAction::Settings) => {
-                    self.settings_dialog = Some(SettingsDialog::new(&self.settings))
-                }
-                None => {}
-            }
-        });
+            });
     }
 
-    fn side_panel(&mut self, ui: &mut Ui) {
-        if !self.show_sidebar {
+    fn side_panel(&mut self, ui: &mut Ui, index: usize) {
+        if !self.desks[index].show_sidebar {
             return;
         }
         let ctx = ui.ctx().clone();
         let frame = Frame::new()
             .fill(theme::PANEL)
             .inner_margin(Margin::same(10));
-        egui::Panel::left("sidebar")
+        egui::Panel::left(panel_id(ui, "sidebar"))
             .resizable(true)
             .default_size(240.0)
             .size_range(180.0..=420.0)
             .frame(frame)
             .show(ui, |ui| {
-                match self.sidebar.show(ui, &self.shells, &self.hosts) {
-                    Some(SidebarAction::OpenShell(shell)) => self.open_shell(&ctx, &shell),
-                    Some(SidebarAction::Connect(target)) => self.connect(&ctx, &target),
-                    Some(SidebarAction::EditConfig(focus)) => self.open_editor(focus.as_deref()),
+                match self.desks[index]
+                    .sidebar
+                    .show(ui, &self.shells, &self.hosts)
+                {
+                    Some(SidebarAction::OpenShell(shell)) => self.open_shell(&ctx, index, &shell),
+                    Some(SidebarAction::Connect(target)) => self.connect(&ctx, index, &target),
+                    Some(SidebarAction::EditConfig(focus)) => {
+                        self.open_editor(index, focus.as_deref())
+                    }
                     Some(SidebarAction::Reload) => self.reload_config(),
                     None => {}
                 }
             });
     }
 
-    fn sftp_panel(&mut self, ui: &mut Ui) {
-        if !self.show_sftp {
+    fn sftp_panel(&mut self, ui: &mut Ui, index: usize) {
+        if !self.desks[index].show_sftp {
             return;
         }
-        let Some(session) = self.sessions.get(self.active) else {
+        let desk = &mut self.desks[index];
+        let active = desk.active;
+        let Desk {
+            sessions,
+            sftp_views,
+            ..
+        } = desk;
+        let Some(session) = sessions.get(active) else {
             return;
         };
         let Some(client) = session.sftp() else { return };
-        let view = self.sftp_views.entry(session.id).or_default();
+        let view = sftp_views.entry(session.id).or_default();
         let frame = Frame::new()
             .fill(theme::PANEL)
             .inner_margin(Margin::same(10));
-        egui::Panel::right("sftp")
+        egui::Panel::right(panel_id(ui, "sftp"))
             .resizable(true)
             .default_size(330.0)
             .size_range(240.0..=640.0)
@@ -369,58 +523,63 @@ impl App {
             .show(ui, |ui| view.show(ui, client));
     }
 
-    fn central(&mut self, ui: &mut Ui, dialogs_open: bool) {
+    fn central(&mut self, ui: &mut Ui, index: usize, dialogs_open: bool) {
         let ctx = ui.ctx().clone();
         egui::CentralPanel::no_frame().show(ui, |ui| {
-            if let Some(msg) = self.notice.clone()
+            if let Some(msg) = self.desks[index].notice.clone()
                 && banner(ui, &msg, theme::DANGER, &["閉じる"])
             {
-                self.notice = None;
+                self.desks[index].notice = None;
             }
-            if self.sessions.is_empty() {
-                self.welcome(ui);
+            if self.desks[index].sessions.is_empty() {
+                self.welcome(ui, index);
                 return;
             }
-            let index = self.active;
-            match self.sessions[index].status() {
-                Status::Exited(reason) if matches!(self.sessions[index].kind, Kind::Ssh { .. }) => {
+            let tab = self.desks[index].active;
+            match self.desks[index].sessions[tab].status() {
+                Status::Exited(reason)
+                    if matches!(self.desks[index].sessions[tab].kind, Kind::Ssh { .. }) =>
+                {
                     match banner_choice(ui, &reason, theme::WARNING, &["再接続", "閉じる"]) {
-                        Some(0) => self.reconnect(&ctx, index),
-                        Some(_) => self.close(index),
+                        Some(0) => self.reconnect(&ctx, index, tab),
+                        Some(_) => self.close_tab(index, tab),
                         None => {}
                     }
                 }
                 Status::Exited(reason)
-                    if matches!(self.sessions[index].kind, Kind::Serial { .. }) =>
+                    if matches!(self.desks[index].sessions[tab].kind, Kind::Serial { .. }) =>
                 {
                     match banner_choice(ui, &reason, theme::WARNING, &["再接続", "閉じる"]) {
-                        Some(0) => self.reopen_serial(&ctx, index),
-                        Some(_) => self.close(index),
+                        Some(0) => self.reopen_serial(&ctx, index, tab),
+                        Some(_) => self.close_tab(index, tab),
                         None => {}
                     }
                 }
                 Status::Connecting => {
                     banner(
                         ui,
-                        &format!("{} に接続中...", self.sessions[index].title()),
+                        &format!("{} に接続中...", self.desks[index].sessions[tab].title()),
                         theme::ACCENT,
                         &[],
                     );
                 }
                 _ => {}
             }
-            let Some(session) = self.sessions.get_mut(self.active) else {
+            let active = self.desks[index].active;
+            let focus_terminal = self.desks[index].focus_terminal;
+            let font_size = self.settings.font_size;
+            let Some(session) = self.desks[index].sessions.get_mut(active) else {
                 return;
             };
             let want_focus =
-                !dialogs_open && (self.focus_terminal || ctx.memory(|m| m.focused().is_none()));
-            let font = TermFont::new(&ctx, self.settings.font_size);
+                !dialogs_open && (focus_terminal || ctx.memory(|m| m.focused().is_none()));
+            let font = TermFont::new(&ctx, font_size);
             let out = terminal::show(ui, session, &font, want_focus);
             if want_focus {
-                self.focus_terminal = false;
+                self.desks[index].focus_terminal = false;
             }
             if let Some(line) = out.command_line {
-                self.note_ssh_command(&line);
+                self.note_ssh_command(index, &line);
             }
             if out.zoom != 0.0 {
                 let range = Settings::FONT_SIZE_RANGE;
@@ -431,7 +590,7 @@ impl App {
         });
     }
 
-    fn welcome(&mut self, ui: &mut Ui) {
+    fn welcome(&mut self, ui: &mut Ui, index: usize) {
         let ctx = ui.ctx().clone();
         ui.vertical_centered(|ui| {
             ui.add_space(ui.available_height() * 0.3);
@@ -445,53 +604,68 @@ impl App {
             if ui.button("ローカルシェルを開く").clicked()
                 && let Some(shell) = self.default_shell()
             {
-                self.open_shell(&ctx, &shell);
+                self.open_shell(&ctx, index, &shell);
             }
             if ui.button("SSH config を編集").clicked() {
-                self.open_editor(None);
+                self.open_editor(index, None);
             }
         });
     }
 
-    fn dialogs(&mut self, ctx: &egui::Context) {
-        self.prompt.show(ctx, &self.sessions);
-        self.ssh_save_dialog(ctx);
-        if let Some(editor) = &mut self.editor {
+    fn dialogs_open(&self, index: usize) -> bool {
+        let id = self.desks[index].id;
+        self.desks[index].ssh_save.is_some()
+            || self.desks[index].serial_dialog.is_some()
+            || (self.editor.is_some() && self.editor_desk == id)
+            || (self.settings_dialog.is_some() && self.settings_desk == id)
+    }
+
+    fn dialogs(&mut self, ctx: &egui::Context, index: usize) {
+        let desk = &mut self.desks[index];
+        desk.prompt.show(ctx, &desk.sessions);
+        self.ssh_save_dialog(ctx, index);
+        if self.editor.is_some()
+            && self.editor_desk == self.desks[index].id
+            && let Some(editor) = &mut self.editor
+        {
             match editor.show(ctx) {
                 Some(EditorResult::Saved) => self.reload_config(),
                 Some(EditorResult::Closed) => {
                     self.editor = None;
-                    self.focus_terminal = true;
+                    self.desks[index].focus_terminal = true;
                 }
                 None => {}
             }
         }
-        let serial_result = self
+        let serial_result = self.desks[index]
             .serial_dialog
             .as_mut()
             .and_then(|dialog| dialog.show(ctx));
         match serial_result {
             Some(SerialResult::Open(open)) => {
-                let id = self.next_id();
+                let id = self.next_session();
                 match Session::serial(ctx, &self.settings, id, &open.port, open.baud) {
                     Ok(session) => {
-                        self.push_session(session);
-                        self.serial_dialog = None;
+                        self.push_session(index, session);
+                        self.desks[index].serial_dialog = None;
                     }
                     Err(e) => {
-                        if let Some(dialog) = &mut self.serial_dialog {
+                        if let Some(dialog) = &mut self.desks[index].serial_dialog {
                             dialog.set_error(format!("{} を開けません: {e}", open.port));
                         }
                     }
                 }
             }
             Some(SerialResult::Closed) => {
-                self.serial_dialog = None;
-                self.focus_terminal = true;
+                self.desks[index].serial_dialog = None;
+                self.desks[index].focus_terminal = true;
             }
             None => {}
         }
-        if let Some(dialog) = &mut self.settings_dialog {
+        if self.settings_dialog.is_some()
+            && self.settings_desk == self.desks[index].id
+            && let Some(dialog) = &mut self.settings_dialog
+        {
             match dialog.show(ctx, &self.shells) {
                 Some(SettingsResult::Saved(new)) => {
                     if new.font_path != self.settings.font_path {
@@ -499,19 +673,19 @@ impl App {
                     }
                     self.settings = new;
                     self.settings_dialog = None;
-                    self.focus_terminal = true;
+                    self.desks[index].focus_terminal = true;
                 }
                 Some(SettingsResult::Closed) => {
                     self.settings_dialog = None;
-                    self.focus_terminal = true;
+                    self.desks[index].focus_terminal = true;
                 }
                 None => {}
             }
         }
     }
 
-    fn note_ssh_command(&mut self, line: &str) {
-        if self.ssh_save.is_some() {
+    fn note_ssh_command(&mut self, index: usize, line: &str) {
+        if self.desks[index].ssh_save.is_some() {
             return;
         }
         let Some(cmd) = sshconfig::find_ssh_command(line) else {
@@ -527,65 +701,166 @@ impl App {
         if self.ssh_dismissed.contains(&dismiss_key(&cmd)) {
             return;
         }
-        self.ssh_save = Some(SshSaveDialog::new(&cmd));
+        self.desks[index].ssh_save = Some(SshSaveDialog::new(&cmd));
     }
 
-    fn ssh_save_dialog(&mut self, ctx: &egui::Context) {
-        let Some(dialog) = &mut self.ssh_save else {
+    fn ssh_save_dialog(&mut self, ctx: &egui::Context, index: usize) {
+        let Some(dialog) = &mut self.desks[index].ssh_save else {
             return;
         };
         let result = dialog.show(ctx);
         match result {
             Some(SshSaveResult::Submit(draft)) => match sshconfig::save_host(&draft) {
                 Ok(()) => {
-                    if let Some(dialog) = self.ssh_save.take() {
+                    if let Some(dialog) = self.desks[index].ssh_save.take() {
                         self.ssh_dismissed.insert(dialog.dismiss_key().to_owned());
                     }
                     self.reload_config();
-                    self.notice = Some("SSH config に追加しました".to_owned());
-                    self.focus_terminal = true;
+                    self.desks[index].notice = Some("SSH config に追加しました".to_owned());
+                    self.desks[index].focus_terminal = true;
                 }
                 Err(error) => {
-                    if let Some(dialog) = &mut self.ssh_save {
+                    if let Some(dialog) = &mut self.desks[index].ssh_save {
                         dialog.set_error(error);
                     }
                 }
             },
             Some(SshSaveResult::Dismissed) => {
-                if let Some(dialog) = self.ssh_save.take() {
+                if let Some(dialog) = self.desks[index].ssh_save.take() {
                     self.ssh_dismissed.insert(dialog.dismiss_key().to_owned());
                 }
-                self.focus_terminal = true;
+                self.desks[index].focus_terminal = true;
             }
             None => {}
         }
+    }
+
+    fn desk_ui(&mut self, ui: &mut Ui, index: usize) {
+        if index >= self.desks.len() {
+            return;
+        }
+        let ctx = ui.ctx().clone();
+        if ui.input(|i| i.viewport().focused.unwrap_or(false)) {
+            self.focused = self.desks[index].id;
+        }
+        if self.desks[index].id != 0 && ui.input(|i| i.viewport().close_requested()) {
+            self.desks[index].close = true;
+            return;
+        }
+        if index == 0 {
+            self.poll_launches(&ctx);
+        }
+        if self.desks.get(index).is_some_and(|desk| desk.close) {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+            return;
+        }
+        self.handle_shortcuts(&ctx, index);
+        self.close_exited_local(index);
+        if self.desks[index].close {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+            return;
+        }
+        self.handle_dropped_files(&ctx, index);
+        let dialogs_open = self.dialogs_open(index);
+        self.tab_bar(ui, index);
+        if self.desks[index].close {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+            return;
+        }
+        self.side_panel(ui, index);
+        self.sftp_panel(ui, index);
+        self.central(ui, index, dialogs_open);
+        self.dialogs(&ctx, index);
+        chrome::resize_borders(ui);
+        self.update_title(&ctx, index);
+    }
+
+    fn present_children(&mut self, ctx: &egui::Context) {
+        let pending: Vec<(ViewportId, Option<Spawn>)> = self
+            .desks
+            .iter_mut()
+            .skip(1)
+            .map(|desk| (viewport_id(desk.id), desk.spawn.take()))
+            .collect();
+        for (offset, (id, spawn)) in pending.into_iter().enumerate() {
+            let builder = self.child_builder(spawn);
+            let index = offset + 1;
+            ctx.show_viewport_immediate(id, builder, |ui, _| {
+                self.desk_ui(ui, index);
+            });
+        }
+        self.desks.retain(|desk| desk.id == 0 || !desk.close);
+    }
+
+    fn child_builder(&self, spawn: Option<Spawn>) -> ViewportBuilder {
+        let mut builder = ViewportBuilder::default()
+            .with_title("IkTerminal")
+            .with_app_id("IkTerminal")
+            .with_min_inner_size([480.0, 300.0])
+            .with_decorations(false)
+            .with_drag_and_drop(true)
+            .with_icon(Arc::clone(&self.icon));
+        if let Some(spawn) = spawn {
+            builder = builder.with_inner_size(spawn.size).with_active(true);
+            if let Some(pos) = spawn.pos {
+                builder = builder.with_position(pos);
+            }
+        }
+        builder
     }
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        crate::frame::enforce(self.hwnd);
+        crate::frame::enforce();
         let ctx = ui.ctx().clone();
-        self.handle_shortcuts(&ctx);
-        self.close_exited_local();
-        self.handle_dropped_files(&ctx);
-        let dialogs_open = self.editor.is_some()
-            || self.settings_dialog.is_some()
-            || self.ssh_save.is_some()
-            || self.serial_dialog.is_some();
-
-        self.tab_bar(ui);
-        self.side_panel(ui);
-        self.sftp_panel(ui);
-        self.central(ui, dialogs_open);
-        self.dialogs(&ctx);
-        chrome::resize_borders(ui);
-        self.update_title(&ctx);
+        self.desk_ui(ui, 0);
+        self.present_children(&ctx);
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         theme::term_bg().to_normalized_gamma_f32()
     }
+}
+
+fn viewport_id(desk_id: u64) -> ViewportId {
+    if desk_id == 0 {
+        ViewportId::ROOT
+    } else {
+        ViewportId::from_hash_of(("ikterminal-window", desk_id))
+    }
+}
+
+fn panel_id(ui: &Ui, name: &str) -> egui::Id {
+    egui::Id::new((name, ui.ctx().viewport_id()))
+}
+
+fn take_session(desk: &mut Desk, tab: usize) -> Option<Session> {
+    if tab >= desk.sessions.len() {
+        return None;
+    }
+    let session = desk.sessions.remove(tab);
+    if desk.active >= desk.sessions.len() {
+        desk.active = desk.sessions.len().saturating_sub(1);
+    }
+    desk.focus_terminal = true;
+    Some(session)
+}
+
+fn detach_spawn(ui: &Ui) -> Spawn {
+    let outer = ui.input(|i| i.viewport().outer_rect);
+    let pointer = ui.input(|i| i.pointer.interact_pos());
+    let size = ui
+        .input(|i| i.viewport().inner_rect.map(|rect| rect.size()))
+        .unwrap_or(egui::vec2(1100.0, 700.0));
+    let pos = match (outer, pointer) {
+        (Some(outer), Some(pointer)) => {
+            Some(outer.min + pointer.to_vec2() - egui::vec2(48.0, 18.0))
+        }
+        (Some(outer), None) => Some(outer.min + egui::vec2(32.0, 32.0)),
+        _ => None,
+    };
+    Spawn { pos, size }
 }
 
 fn dismiss_key(cmd: &SshCommand) -> String {
