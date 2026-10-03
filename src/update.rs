@@ -3,17 +3,22 @@
 //! The check and download run off the UI thread. The file is kept only when its
 //! SHA-256 matches the digest GitHub published for that asset.
 
-#![cfg_attr(debug_assertions, allow(dead_code))]
-
-use std::io::{Read, Write};
+#[cfg(any(test, all(not(debug_assertions), not(windows))))]
+use std::io::Read;
+#[cfg(not(debug_assertions))]
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 #[cfg(not(debug_assertions))]
 use std::thread;
 
+#[cfg(not(debug_assertions))]
 const LATEST: &str = "https://api.github.com/repos/kenitp/IKTerminal/releases/latest";
+#[cfg(not(debug_assertions))]
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
+#[cfg(not(debug_assertions))]
 const JSON_LIMIT: u64 = 2 * 1024 * 1024;
+#[cfg(not(debug_assertions))]
 const ASSET_LIMIT: u64 = 80 * 1024 * 1024;
 
 #[derive(Clone)]
@@ -53,6 +58,7 @@ pub fn apply(staged: &StagedUpdate) -> std::io::Result<()> {
     }
 }
 
+#[cfg(not(debug_assertions))]
 fn fetch() -> Option<StagedUpdate> {
     let body = http_get(LATEST, Some("application/vnd.github+json"), JSON_LIMIT)?;
     let json = String::from_utf8(body).ok()?;
@@ -73,14 +79,15 @@ fn fetch() -> Option<StagedUpdate> {
     })
 }
 
+#[cfg(not(debug_assertions))]
 fn stage(version: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
     let dir = std::env::temp_dir().join(format!("IkTerminal-update-{version}"));
     std::fs::create_dir_all(&dir)?;
-    #[cfg(windows)]
+    #[cfg(all(windows, not(debug_assertions)))]
     let path = dir.join(asset_name(version));
     #[cfg(not(windows))]
     let path = dir.join("ikterminal");
-    #[cfg(windows)]
+    #[cfg(all(windows, not(debug_assertions)))]
     let payload = bytes;
     #[cfg(not(windows))]
     let payload = &extract_ikterminal(bytes)?;
@@ -164,6 +171,7 @@ fn apply_linux(binary: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(not(debug_assertions))]
 fn asset_name(version: &str) -> String {
     if cfg!(windows) {
         format!("IkTerminal-{version}-setup.exe")
@@ -175,17 +183,20 @@ fn asset_name(version: &str) -> String {
     }
 }
 
+#[cfg(any(test, not(debug_assertions)))]
 struct Release {
     version: String,
     assets: Vec<Asset>,
 }
 
+#[cfg(any(test, not(debug_assertions)))]
 struct Asset {
     name: String,
     url: String,
     sha256: [u8; 32],
 }
 
+#[cfg(any(test, not(debug_assertions)))]
 fn parse_release(json: &str) -> Option<Release> {
     let version = depth1_string(json, "tag_name")?;
     let version = version.strip_prefix('v').unwrap_or(&version).to_owned();
@@ -212,6 +223,7 @@ fn parse_release(json: &str) -> Option<Release> {
     Some(Release { version, assets })
 }
 
+#[cfg(any(test, not(debug_assertions)))]
 fn is_newer(latest: &str, current: &str) -> bool {
     match (parse_version(latest), parse_version(current)) {
         (Some(latest), Some(current)) => latest > current,
@@ -219,6 +231,7 @@ fn is_newer(latest: &str, current: &str) -> bool {
     }
 }
 
+#[cfg(any(test, not(debug_assertions)))]
 fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
     let text = text.strip_prefix('v').unwrap_or(text);
     let mut parts = text.split('.');
@@ -228,6 +241,7 @@ fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
     parts.next().is_none().then_some((major, minor, patch))
 }
 
+#[cfg(any(test, not(debug_assertions)))]
 fn parse_sha256(digest: &str) -> Option<[u8; 32]> {
     let hex = digest.strip_prefix("sha256:")?;
     if hex.len() != 64 || !hex.as_bytes().iter().all(u8::is_ascii_hexdigit) {
@@ -240,6 +254,7 @@ fn parse_sha256(digest: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
+#[cfg(not(debug_assertions))]
 fn sha256(bytes: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let hash = Sha256::digest(bytes);
@@ -249,6 +264,7 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
 }
 
 /// Value of a string field on the object that directly contains it.
+#[cfg(any(test, not(debug_assertions)))]
 fn depth1_string(json: &str, key: &str) -> Option<String> {
     let bytes = json.as_bytes();
     let mut i = 0;
@@ -282,6 +298,7 @@ fn depth1_string(json: &str, key: &str) -> Option<String> {
     None
 }
 
+#[cfg(any(test, not(debug_assertions)))]
 fn json_string(json: &str, start: usize) -> Option<(String, usize)> {
     let bytes = json.as_bytes();
     if bytes.get(start) != Some(&b'"') {
@@ -320,6 +337,7 @@ fn json_string(json: &str, start: usize) -> Option<(String, usize)> {
     None
 }
 
+#[cfg(any(test, not(debug_assertions)))]
 fn bracket_body(json: &str, open: char, close: char) -> Option<&str> {
     let mut depth = 0;
     let mut start = None;
@@ -359,6 +377,7 @@ fn bracket_body(json: &str, open: char, close: char) -> Option<&str> {
     None
 }
 
+#[cfg(any(test, not(debug_assertions)))]
 fn objects(array: &str) -> Vec<&str> {
     let mut found = Vec::new();
     let mut depth = 0;
@@ -401,6 +420,7 @@ fn objects(array: &str) -> Vec<&str> {
     found
 }
 
+#[cfg(any(test, all(not(debug_assertions), not(windows))))]
 fn extract_ikterminal(gzip: &[u8]) -> std::io::Result<Vec<u8>> {
     use flate2::read::GzDecoder;
     let mut plain = Vec::new();
@@ -428,6 +448,7 @@ fn extract_ikterminal(gzip: &[u8]) -> std::io::Result<Vec<u8>> {
     Err(std::io::Error::other("配布物に実行ファイルがありません"))
 }
 
+#[cfg(any(test, all(not(debug_assertions), not(windows))))]
 fn header_name(header: &[u8]) -> String {
     let end = header[..100]
         .iter()
@@ -436,6 +457,7 @@ fn header_name(header: &[u8]) -> String {
     String::from_utf8_lossy(&header[..end]).into_owned()
 }
 
+#[cfg(any(test, all(not(debug_assertions), not(windows))))]
 fn header_size(header: &[u8]) -> std::io::Result<usize> {
     let text = header[124..136]
         .iter()
@@ -446,8 +468,9 @@ fn header_size(header: &[u8]) -> std::io::Result<usize> {
     usize::from_str_radix(text.trim(), 8).map_err(|_| std::io::Error::other("サイズが不正です"))
 }
 
+#[cfg(not(debug_assertions))]
 fn http_get(url: &str, accept: Option<&str>, limit: u64) -> Option<Vec<u8>> {
-    #[cfg(windows)]
+    #[cfg(all(windows, not(debug_assertions)))]
     {
         http_get_windows(url, accept, limit)
     }
@@ -457,7 +480,7 @@ fn http_get(url: &str, accept: Option<&str>, limit: u64) -> Option<Vec<u8>> {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(debug_assertions)))]
 fn http_get_windows(url: &str, accept: Option<&str>, limit: u64) -> Option<Vec<u8>> {
     let parts = split_url(url)?;
     let agent = wide("IkTerminal");
@@ -555,10 +578,10 @@ fn http_get_windows(url: &str, accept: Option<&str>, limit: u64) -> Option<Vec<u
     Some(body)
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(debug_assertions)))]
 struct Internet(isize);
 
-#[cfg(windows)]
+#[cfg(all(windows, not(debug_assertions)))]
 impl Drop for Internet {
     fn drop(&mut self) {
         if self.0 != 0 {
@@ -567,7 +590,7 @@ impl Drop for Internet {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(debug_assertions)))]
 fn split_url(url: &str) -> Option<UrlParts> {
     let (https, rest) = if let Some(rest) = url.strip_prefix("https://") {
         (true, rest)
@@ -593,7 +616,7 @@ fn split_url(url: &str) -> Option<UrlParts> {
     })
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(debug_assertions)))]
 struct UrlParts {
     host: String,
     port: u16,
@@ -601,12 +624,12 @@ struct UrlParts {
     https: bool,
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(debug_assertions)))]
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(debug_assertions)))]
 #[link(name = "winhttp")]
 unsafe extern "system" {
     fn WinHttpOpen(
@@ -664,7 +687,7 @@ unsafe extern "system" {
     fn WinHttpCloseHandle(handle: isize) -> i32;
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(debug_assertions)))]
 fn http_get_unix(url: &str, accept: Option<&str>, limit: u64) -> Option<Vec<u8>> {
     let agent = ureq::AgentBuilder::new()
         .https_only(true)
@@ -710,11 +733,15 @@ mod tests {
         assert_eq!(release.version, "0.2.0");
         assert_eq!(release.assets.len(), 2);
         assert_eq!(release.assets[0].name, "IkTerminal-0.2.0-setup.exe");
+        assert_eq!(release.assets[0].url, "https://example.test/setup.exe");
+        assert_eq!(release.assets[0].sha256[0], 0xaa);
         assert!(parse_release(r#"{"tag_name":"nope","assets":[]}"#).is_none());
     }
 
     #[test]
     fn archive_contains_the_binary() {
+        use std::io::Write;
+
         use flate2::Compression;
         use flate2::write::GzEncoder;
         let payload = b"#!/bin/ikterminal\n";
