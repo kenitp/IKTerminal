@@ -10,6 +10,7 @@ mod settings;
 mod sshconfig;
 mod terminal;
 mod ui;
+mod update;
 
 fn main() -> eframe::Result {
     let launch = launch::from_args();
