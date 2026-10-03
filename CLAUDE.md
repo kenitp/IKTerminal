@@ -5,7 +5,7 @@ Rust 製の軽量ターミナル。仕様は `docs/00_spec/`、設計は `docs/0
 ## コマンド
 
 - ビルド: `cargo build` / `cargo build --release`
-- 検査: `cargo clippy --all-targets` (警告ゼロを維持)
+- 検査: `cargo build --all-targets`、`cargo build --release`、`cargo clippy --all-targets -- -D warnings`。ビルド警告は禁止。
 - テスト: `cargo test`
 - インストーラ: `.\scripts\build-installer.ps1`
 - Linux パッケージ: `./scripts/package-linux.sh`
