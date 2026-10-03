@@ -1,0 +1,29 @@
+[package]
+name = "ikterminal"
+version = "0.1.0"
+edition = "2024"
+description = "Lightweight terminal with SSH/SFTP"
+license = "MIT"
+
+[dependencies]
+alacritty_terminal = "0.26.0"
+arboard = { version = "3.6.1", default-features = false }
+eframe = { version = "0.35.0", default-features = false, features = ["glow", "default_fonts"] }
+egui = { version = "0.35.0", default-features = false }
+memmap2 = "0.9.11"
+rfd = "0.17.2"
+russh = { version = "0.63.3", default-features = false, features = ["ring", "rsa", "flate2"] }
+russh-sftp = "3.0.1"
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "sync", "fs", "io-util", "time", "net"] }
+
+[target.'cfg(unix)'.dependencies]
+eframe = { version = "0.35.0", default-features = false, features = ["x11", "wayland"] }
+
+[build-dependencies]
+embed-resource = "3"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
