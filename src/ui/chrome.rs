@@ -67,7 +67,11 @@ pub fn resize_borders(ui: &mut Ui) {
         ),
     ];
     for (id, direction, cursor, area) in edges {
-        let response = ui.interact(area, Id::new(("resize", id)), Sense::click_and_drag());
+        let response = ui.interact(
+            area,
+            Id::new(("resize", id, ui.ctx().viewport_id())),
+            Sense::click_and_drag(),
+        );
         if response.hovered() || response.dragged() {
             ui.ctx().set_cursor_icon(cursor);
         }

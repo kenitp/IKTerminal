@@ -1,7 +1,8 @@
 //! Command line: `ikt [directory]` opens a shell in that directory.
 //!
 //! Explorer's address bar runs the command with the viewed folder as the working
-//! directory, so `ikt .` resolves to that folder.
+//! directory, so `ikt .` resolves to that folder. A second process hands the folder
+//! to the running instance (`instance`) instead of opening another window.
 
 use std::path::{Path, PathBuf};
 

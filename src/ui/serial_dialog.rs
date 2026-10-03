@@ -41,7 +41,7 @@ impl SerialDialog {
 
     pub fn show(&mut self, ctx: &egui::Context) -> Option<SerialResult> {
         let mut result = None;
-        egui::Modal::new(egui::Id::new("serial")).show(ctx, |ui| {
+        egui::Modal::new(egui::Id::new(("serial", ctx.viewport_id()))).show(ctx, |ui| {
             ui.set_width(420.0);
             ui.heading("シリアル接続");
             ui.add_space(8.0);

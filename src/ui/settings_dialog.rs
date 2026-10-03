@@ -27,7 +27,7 @@ impl SettingsDialog {
 
     pub fn show(&mut self, ctx: &egui::Context, shells: &[ShellSpec]) -> Option<SettingsResult> {
         let mut result = None;
-        egui::Modal::new(egui::Id::new("settings")).show(ctx, |ui| {
+        egui::Modal::new(egui::Id::new(("settings", ctx.viewport_id()))).show(ctx, |ui| {
             ui.set_width(460.0);
             ui.heading("設定");
             ui.add_space(8.0);

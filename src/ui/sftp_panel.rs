@@ -235,52 +235,55 @@ impl SftpView {
             return;
         };
         let mut close = false;
-        egui::Modal::new(egui::Id::new("sftp-dialog")).show(ui.ctx(), |ui| {
-            ui.set_width(320.0);
-            let confirm = match dialog {
-                Dialog::NewFolder(name) => {
-                    ui.heading("新規フォルダ");
-                    ui.text_edit_singleline(name).request_focus();
-                    !name.trim().is_empty()
-                }
-                Dialog::Rename { to, .. } => {
-                    ui.heading("名前を変更");
-                    ui.text_edit_singleline(to).request_focus();
-                    !to.trim().is_empty()
-                }
-                Dialog::Delete(entry) => {
-                    ui.heading("削除の確認");
-                    let what = if entry.is_dir {
-                        "フォルダとその中身"
-                    } else {
-                        "ファイル"
-                    };
-                    ui.label(format!("{what}「{}」を削除しますか?", entry.name));
-                    true
-                }
-            };
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let ok = ui
-                    .add_enabled_ui(confirm, |ui| primary_button(ui, "OK"))
-                    .inner
-                    .clicked()
-                    || (confirm && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                if ok {
-                    match dialog {
-                        Dialog::NewFolder(name) => client.mkdir(name.trim()),
-                        Dialog::Rename { from, to } => client.rename(from, to.trim()),
-                        Dialog::Delete(entry) => client.remove(entry),
+        egui::Modal::new(egui::Id::new(("sftp-dialog", ui.ctx().viewport_id()))).show(
+            ui.ctx(),
+            |ui| {
+                ui.set_width(320.0);
+                let confirm = match dialog {
+                    Dialog::NewFolder(name) => {
+                        ui.heading("新規フォルダ");
+                        ui.text_edit_singleline(name).request_focus();
+                        !name.trim().is_empty()
                     }
-                    close = true;
-                }
-                if ui.button("キャンセル").clicked()
-                    || ui.input(|i| i.key_pressed(egui::Key::Escape))
-                {
-                    close = true;
-                }
-            });
-        });
+                    Dialog::Rename { to, .. } => {
+                        ui.heading("名前を変更");
+                        ui.text_edit_singleline(to).request_focus();
+                        !to.trim().is_empty()
+                    }
+                    Dialog::Delete(entry) => {
+                        ui.heading("削除の確認");
+                        let what = if entry.is_dir {
+                            "フォルダとその中身"
+                        } else {
+                            "ファイル"
+                        };
+                        ui.label(format!("{what}「{}」を削除しますか?", entry.name));
+                        true
+                    }
+                };
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let ok = ui
+                        .add_enabled_ui(confirm, |ui| primary_button(ui, "OK"))
+                        .inner
+                        .clicked()
+                        || (confirm && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                    if ok {
+                        match dialog {
+                            Dialog::NewFolder(name) => client.mkdir(name.trim()),
+                            Dialog::Rename { from, to } => client.rename(from, to.trim()),
+                            Dialog::Delete(entry) => client.remove(entry),
+                        }
+                        close = true;
+                    }
+                    if ui.button("キャンセル").clicked()
+                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                    {
+                        close = true;
+                    }
+                });
+            },
+        );
         if close {
             self.dialog = None;
         }
