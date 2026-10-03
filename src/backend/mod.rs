@@ -1,6 +1,8 @@
-//! Session I/O backends: local PTY, SSH shell and SFTP.
+//! Session I/O backends: local PTY, SSH shell, SFTP, and serial ports.
 
+pub mod bitwarden;
 pub mod local;
+pub mod serial;
 pub mod sftp;
 pub mod ssh;
 

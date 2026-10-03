@@ -1,6 +1,7 @@
 //! A terminal tab: emulator state plus the backend feeding it.
 
 use std::borrow::Cow;
+use std::path::Path;
 use std::sync::Arc;
 
 use alacritty_terminal::Term;
@@ -10,7 +11,7 @@ use alacritty_terminal::term::Config;
 
 use crate::backend::local::{self, ShellSpec};
 use crate::backend::sftp::SftpClient;
-use crate::backend::ssh;
+use crate::backend::{serial, ssh};
 use crate::settings::Settings;
 use crate::sshconfig::SshConfig;
 use crate::terminal::{GridSize, Listener, Prompt, Shared, Status, TermHandle};
@@ -20,6 +21,7 @@ const INITIAL: GridSize = GridSize { cols: 80, rows: 24 };
 pub enum Kind {
     Local,
     Ssh { target: String, sftp: SftpClient },
+    Serial { port: String, baud: u32 },
 }
 
 pub struct Session {
@@ -31,28 +33,98 @@ pub struct Session {
 }
 
 impl Session {
-    fn create(ctx: &egui::Context, settings: &Settings, title: String) -> (Arc<Shared>, TermHandle, Listener) {
-        let size = WindowSize { num_lines: INITIAL.rows as u16, num_cols: INITIAL.cols as u16, cell_width: 8, cell_height: 16 };
+    fn create(
+        ctx: &egui::Context,
+        settings: &Settings,
+        title: String,
+    ) -> (Arc<Shared>, TermHandle, Listener) {
+        let size = WindowSize {
+            num_lines: INITIAL.rows as u16,
+            num_cols: INITIAL.cols as u16,
+            cell_width: 8,
+            cell_height: 16,
+        };
         let shared = Shared::new(ctx.clone(), title, size);
         let listener = Listener(shared.clone());
-        let config = Config { scrolling_history: settings.scrollback, ..Config::default() };
-        let term = Arc::new(FairMutex::new(Term::new(config, &INITIAL, listener.clone())));
+        let config = Config {
+            scrolling_history: settings.scrollback,
+            ..Config::default()
+        };
+        let term = Arc::new(FairMutex::new(Term::new(
+            config,
+            &INITIAL,
+            listener.clone(),
+        )));
         (shared, term, listener)
     }
 
-    pub fn local(ctx: &egui::Context, settings: &Settings, id: u64, shell: &ShellSpec) -> std::io::Result<Self> {
+    pub fn local(
+        ctx: &egui::Context,
+        settings: &Settings,
+        id: u64,
+        shell: &ShellSpec,
+        directory: Option<&Path>,
+    ) -> std::io::Result<Self> {
         let (shared, term, listener) = Self::create(ctx, settings, shell.name.clone());
-        local::spawn(term.clone(), listener, shell)?;
-        Ok(Self { id, kind: Kind::Local, term, shared, grid: INITIAL })
+        local::spawn(term.clone(), listener, shell, directory)?;
+        Ok(Self {
+            id,
+            kind: Kind::Local,
+            term,
+            shared,
+            grid: INITIAL,
+        })
     }
 
-    pub fn ssh(ctx: &egui::Context, settings: &Settings, id: u64, config: &SshConfig, target: &str) -> Self {
+    pub fn ssh(
+        ctx: &egui::Context,
+        settings: &Settings,
+        id: u64,
+        config: &SshConfig,
+        target: &str,
+    ) -> Self {
         let host = config.resolve(target);
         let jumps = host.proxy_jump.iter().map(|j| config.resolve(j)).collect();
         let (shared, term, _) = Self::create(ctx, settings, host.alias.clone());
-        let link = ssh::spawn(shared.clone(), term.clone(), host, jumps);
+        let link = ssh::spawn(
+            shared.clone(),
+            term.clone(),
+            host,
+            jumps,
+            settings.launch_bitwarden,
+        );
         let sftp = SftpClient::new(link, ctx.clone());
-        Self { id, kind: Kind::Ssh { target: target.to_owned(), sftp }, term, shared, grid: INITIAL }
+        Self {
+            id,
+            kind: Kind::Ssh {
+                target: target.to_owned(),
+                sftp,
+            },
+            term,
+            shared,
+            grid: INITIAL,
+        }
+    }
+
+    pub fn serial(
+        ctx: &egui::Context,
+        settings: &Settings,
+        id: u64,
+        port: &str,
+        baud: u32,
+    ) -> std::io::Result<Self> {
+        let (shared, term, _) = Self::create(ctx, settings, port.to_owned());
+        serial::spawn(shared.clone(), term.clone(), port, baud)?;
+        Ok(Self {
+            id,
+            kind: Kind::Serial {
+                port: port.to_owned(),
+                baud,
+            },
+            term,
+            shared,
+            grid: INITIAL,
+        })
     }
 
     /// Window title set by the program; executable paths are shortened to their name.
@@ -74,7 +146,7 @@ impl Session {
     pub fn sftp(&self) -> Option<&SftpClient> {
         match &self.kind {
             Kind::Ssh { sftp, .. } => Some(sftp),
-            Kind::Local => None,
+            Kind::Local | Kind::Serial { .. } => None,
         }
     }
 

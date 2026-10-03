@@ -42,11 +42,17 @@ impl PromptDialog {
             };
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let ok_label = if prompt.kind == PromptKind::Confirm { "信頼して接続" } else { "OK" };
+                let ok_label = if prompt.kind == PromptKind::Confirm {
+                    "信頼して接続"
+                } else {
+                    "OK"
+                };
                 if primary_button(ui, ok_label).clicked() || enter {
                     answer = Some(Some(std::mem::take(&mut self.input)));
                 }
-                if ui.button("キャンセル").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if ui.button("キャンセル").clicked()
+                    || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                {
                     answer = Some(None);
                 }
             });

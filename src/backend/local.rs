@@ -22,8 +22,14 @@ impl ShellSpec {
     pub fn from_command_line(cmd: &str) -> Option<Self> {
         let mut parts = cmd.split_whitespace().map(str::to_owned);
         let program = parts.next()?;
-        let name = Path::new(&program).file_stem().map_or_else(|| program.clone(), |s| s.to_string_lossy().into_owned());
-        Some(Self { name, program, args: parts.collect() })
+        let name = Path::new(&program)
+            .file_stem()
+            .map_or_else(|| program.clone(), |s| s.to_string_lossy().into_owned());
+        Some(Self {
+            name,
+            program,
+            args: parts.collect(),
+        })
     }
 }
 
@@ -45,9 +51,14 @@ fn detect_platform_shells() -> Vec<ShellSpec> {
     add("PowerShell 7", find_in_path("pwsh.exe"));
     add(
         "Windows PowerShell",
-        system32.as_ref().map(|s| s.join(r"WindowsPowerShell\v1.0\powershell.exe")),
+        system32
+            .as_ref()
+            .map(|s| s.join(r"WindowsPowerShell\v1.0\powershell.exe")),
     );
-    add("コマンド プロンプト", system32.as_ref().map(|s| s.join("cmd.exe")));
+    add(
+        "コマンド プロンプト",
+        system32.as_ref().map(|s| s.join("cmd.exe")),
+    );
     add("WSL", system32.as_ref().map(|s| s.join("wsl.exe")));
     shells
 }
@@ -57,7 +68,10 @@ fn detect_platform_shells() -> Vec<ShellSpec> {
     let mut shells = Vec::new();
     let mut seen = HashSet::new();
     if let Some(program) = std::env::var_os("SHELL").map(PathBuf::from) {
-        let name = program.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "shell".to_owned());
+        let name = program
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "shell".to_owned());
         push_shell(&mut shells, &mut seen, &name, program);
     }
     for (name, exe) in [("bash", "bash"), ("zsh", "zsh"), ("fish", "fish")] {
@@ -69,18 +83,29 @@ fn detect_platform_shells() -> Vec<ShellSpec> {
     shells
 }
 
-fn push_shell(shells: &mut Vec<ShellSpec>, seen: &mut HashSet<PathBuf>, name: &str, program: PathBuf) {
+fn push_shell(
+    shells: &mut Vec<ShellSpec>,
+    seen: &mut HashSet<PathBuf>,
+    name: &str,
+    program: PathBuf,
+) {
     if !program.is_file() {
         return;
     }
     let key = program.canonicalize().unwrap_or_else(|_| program.clone());
     if seen.insert(key) {
-        shells.push(ShellSpec { name: name.to_owned(), program: program.to_string_lossy().into_owned(), args: Vec::new() });
+        shells.push(ShellSpec {
+            name: name.to_owned(),
+            program: program.to_string_lossy().into_owned(),
+            args: Vec::new(),
+        });
     }
 }
 
 fn find_in_path(exe: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(exe)).find(|p| p.is_file())
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|d| d.join(exe))
+        .find(|p| p.is_file())
 }
 
 struct LocalIo(EventLoopSender);
@@ -102,11 +127,16 @@ impl PtyIo for LocalIo {
 }
 
 /// Starts `shell` in a PTY and feeds its output into `term`.
-pub fn spawn(term: TermHandle, listener: Listener, shell: &ShellSpec) -> std::io::Result<()> {
+pub fn spawn(
+    term: TermHandle,
+    listener: Listener,
+    shell: &ShellSpec,
+    directory: Option<&Path>,
+) -> std::io::Result<()> {
     let shared = listener.0.clone();
     let options = tty::Options {
         shell: Some(tty::Shell::new(shell.program.clone(), shell.args.clone())),
-        working_directory: std::env::home_dir(),
+        working_directory: directory.map(Path::to_path_buf).or_else(std::env::home_dir),
         drain_on_exit: true,
         env: HashMap::from([
             ("TERM".to_owned(), "xterm-256color".to_owned()),
@@ -130,7 +160,11 @@ mod tests {
         let shells = super::detect_shells();
         assert!(!shells.is_empty());
         for shell in shells {
-            assert!(std::path::Path::new(&shell.program).is_file(), "{}", shell.program);
+            assert!(
+                std::path::Path::new(&shell.program).is_file(),
+                "{}",
+                shell.program
+            );
         }
     }
 }

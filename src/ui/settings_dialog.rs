@@ -19,7 +19,10 @@ pub struct SettingsDialog {
 
 impl SettingsDialog {
     pub fn new(settings: &Settings) -> Self {
-        Self { draft: settings.clone(), error: None }
+        Self {
+            draft: settings.clone(),
+            error: None,
+        }
     }
 
     pub fn show(&mut self, ctx: &egui::Context, shells: &[ShellSpec]) -> Option<SettingsResult> {
@@ -28,55 +31,95 @@ impl SettingsDialog {
             ui.set_width(460.0);
             ui.heading("設定");
             ui.add_space(8.0);
-            egui::Grid::new("settings-grid").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
-                ui.label("フォントサイズ");
-                ui.add(egui::Slider::new(&mut self.draft.font_size, Settings::FONT_SIZE_RANGE).step_by(0.5));
-                ui.end_row();
-
-                ui.label("フォントファイル");
-                ui.horizontal(|ui| {
+            egui::Grid::new("settings-grid")
+                .num_columns(2)
+                .spacing([16.0, 10.0])
+                .show(ui, |ui| {
+                    ui.label("フォントサイズ");
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.draft.font_path)
-                            .hint_text("自動 (システムの等幅フォント)")
-                            .desired_width(250.0),
+                        egui::Slider::new(&mut self.draft.font_size, Settings::FONT_SIZE_RANGE)
+                            .step_by(0.5),
                     );
-                    if ui.button("参照").clicked()
-                        && let Some(path) = rfd::FileDialog::new().add_filter("Font", &["ttf", "otf", "ttc"]).pick_file()
-                    {
-                        self.draft.font_path = path.to_string_lossy().into_owned();
-                    }
-                });
-                ui.end_row();
+                    ui.end_row();
 
-                ui.label("既定のシェル");
-                ui.vertical(|ui| {
-                    let selected = shells
-                        .iter()
-                        .find(|s| s.program == self.draft.shell)
-                        .map_or_else(|| if self.draft.shell.is_empty() { "自動" } else { "カスタム" }.to_owned(), |s| s.name.clone());
-                    egui::ComboBox::from_id_salt("shell").selected_text(selected).width(250.0).show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.draft.shell, String::new(), "自動");
-                        for s in shells {
-                            ui.selectable_value(&mut self.draft.shell, s.program.clone(), &s.name);
+                    ui.label("フォントファイル");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.draft.font_path)
+                                .hint_text("自動 (システムの等幅フォント)")
+                                .desired_width(250.0),
+                        );
+                        if ui.button("参照").clicked()
+                            && let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Font", &["ttf", "otf", "ttc"])
+                                .pick_file()
+                        {
+                            self.draft.font_path = path.to_string_lossy().into_owned();
                         }
                     });
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.draft.shell)
-                            .hint_text(if cfg!(windows) {
-                                "コマンドライン (例: pwsh -NoLogo)"
-                            } else {
-                                "コマンドライン (例: /bin/bash -l)"
-                            })
-                            .desired_width(250.0),
-                    );
-                });
-                ui.end_row();
+                    ui.end_row();
 
-                ui.label("スクロールバック行数");
-                ui.add(egui::DragValue::new(&mut self.draft.scrollback).range(0..=100_000).speed(100));
-                ui.end_row();
-            });
-            ui.label(RichText::new("スクロールバック行数は新しいタブから適用されます").size(11.5).color(theme::TEXT_DIM));
+                    ui.label("既定のシェル");
+                    ui.vertical(|ui| {
+                        let selected = shells
+                            .iter()
+                            .find(|s| s.program == self.draft.shell)
+                            .map_or_else(
+                                || {
+                                    if self.draft.shell.is_empty() {
+                                        "自動"
+                                    } else {
+                                        "カスタム"
+                                    }
+                                    .to_owned()
+                                },
+                                |s| s.name.clone(),
+                            );
+                        egui::ComboBox::from_id_salt("shell")
+                            .selected_text(selected)
+                            .width(250.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.draft.shell, String::new(), "自動");
+                                for s in shells {
+                                    ui.selectable_value(
+                                        &mut self.draft.shell,
+                                        s.program.clone(),
+                                        &s.name,
+                                    );
+                                }
+                            });
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.draft.shell)
+                                .hint_text(if cfg!(windows) {
+                                    "コマンドライン (例: pwsh -NoLogo)"
+                                } else {
+                                    "コマンドライン (例: /bin/bash -l)"
+                                })
+                                .desired_width(250.0),
+                        );
+                    });
+                    ui.end_row();
+
+                    ui.label("スクロールバック行数");
+                    ui.add(
+                        egui::DragValue::new(&mut self.draft.scrollback)
+                            .range(0..=100_000)
+                            .speed(100),
+                    );
+                    ui.end_row();
+
+                    ui.label("Bitwarden");
+                    ui.checkbox(
+                        &mut self.draft.launch_bitwarden,
+                        "SSH 開始時に、起動していなければ起動する",
+                    );
+                    ui.end_row();
+                });
+            ui.label(
+                RichText::new("スクロールバック行数は新しいタブから適用されます")
+                    .size(11.5)
+                    .color(theme::TEXT_DIM),
+            );
             if let Some(e) = &self.error {
                 ui.label(RichText::new(e).color(theme::DANGER));
             }
@@ -88,7 +131,9 @@ impl SettingsDialog {
                         Err(e) => self.error = Some(format!("保存に失敗しました: {e}")),
                     }
                 }
-                if ui.button("キャンセル").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if ui.button("キャンセル").clicked()
+                    || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                {
                     result = Some(SettingsResult::Closed);
                 }
             });

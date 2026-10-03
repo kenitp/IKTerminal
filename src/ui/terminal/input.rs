@@ -28,10 +28,20 @@ pub fn encode_key(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
         .into_bytes()
     };
     let tilde = |n: u8| -> Vec<u8> {
-        if p == 1 { format!("\x1b[{n}~") } else { format!("\x1b[{n};{p}~") }.into_bytes()
+        if p == 1 {
+            format!("\x1b[{n}~")
+        } else {
+            format!("\x1b[{n};{p}~")
+        }
+        .into_bytes()
     };
     let ss3 = |c: char| -> Vec<u8> {
-        if p == 1 { format!("\x1bO{c}") } else { format!("\x1b[1;{p}{c}") }.into_bytes()
+        if p == 1 {
+            format!("\x1bO{c}")
+        } else {
+            format!("\x1b[1;{p}{c}")
+        }
+        .into_bytes()
     };
 
     let bytes = match key {
@@ -89,8 +99,18 @@ fn ctrl_byte(key: Key) -> Option<u8> {
 
 fn alt_text(key: Key, shift: bool) -> Option<String> {
     let name = key.name();
-    let c = name.chars().next().filter(|c| name.len() == 1 && c.is_ascii_alphanumeric())?;
-    Some(if shift { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() }.to_string())
+    let c = name
+        .chars()
+        .next()
+        .filter(|c| name.len() == 1 && c.is_ascii_alphanumeric())?;
+    Some(
+        if shift {
+            c.to_ascii_uppercase()
+        } else {
+            c.to_ascii_lowercase()
+        }
+        .to_string(),
+    )
 }
 
 /// Text to send for a paste, honoring bracketed paste mode.
@@ -113,17 +133,33 @@ pub const WHEEL_UP: u8 = 64;
 pub const WHEEL_DOWN: u8 = 65;
 
 /// Mouse report in SGR (1006) or legacy X10 encoding. `col`/`row` are 0-based.
-pub fn encode_mouse(button: u8, pressed: bool, col: usize, row: usize, m: Modifiers, sgr: bool) -> Option<Vec<u8>> {
+pub fn encode_mouse(
+    button: u8,
+    pressed: bool,
+    col: usize,
+    row: usize,
+    m: Modifiers,
+    sgr: bool,
+) -> Option<Vec<u8>> {
     let mods = 4 * m.shift as u8 + 8 * m.alt as u8 + 16 * m.ctrl as u8;
     if sgr {
         let suffix = if pressed { 'M' } else { 'm' };
-        return Some(format!("\x1b[<{};{};{}{suffix}", button + mods, col + 1, row + 1).into_bytes());
+        return Some(
+            format!("\x1b[<{};{};{}{suffix}", button + mods, col + 1, row + 1).into_bytes(),
+        );
     }
     if col >= 223 || row >= 223 {
         return None;
     }
     let b = if pressed { button } else { BUTTON_RELEASE };
-    Some(vec![0x1b, b'[', b'M', 32 + b + mods, 33 + col as u8, 33 + row as u8])
+    Some(vec![
+        0x1b,
+        b'[',
+        b'M',
+        32 + b + mods,
+        33 + col as u8,
+        33 + row as u8,
+    ])
 }
 
 #[cfg(test)]
@@ -135,7 +171,10 @@ mod tests {
         let none = Modifiers::NONE;
         assert_eq!(encode_key(Key::ArrowUp, none, false).unwrap(), b"\x1b[A");
         assert_eq!(encode_key(Key::ArrowUp, none, true).unwrap(), b"\x1bOA");
-        assert_eq!(encode_key(Key::ArrowLeft, Modifiers::CTRL, false).unwrap(), b"\x1b[1;5D");
+        assert_eq!(
+            encode_key(Key::ArrowLeft, Modifiers::CTRL, false).unwrap(),
+            b"\x1b[1;5D"
+        );
         assert_eq!(encode_key(Key::C, Modifiers::CTRL, false).unwrap(), b"\x03");
         assert_eq!(encode_key(Key::X, Modifiers::ALT, false).unwrap(), b"\x1bx");
         assert!(encode_key(Key::A, none, false).is_none());
@@ -144,6 +183,9 @@ mod tests {
     #[test]
     fn paste_and_mouse() {
         assert_eq!(encode_paste("a\nb", true), b"\x1b[200~a\rb\x1b[201~");
-        assert_eq!(encode_mouse(WHEEL_UP, true, 0, 0, Modifiers::NONE, true).unwrap(), b"\x1b[<64;1;1M");
+        assert_eq!(
+            encode_mouse(WHEEL_UP, true, 0, 0, Modifiers::NONE, true).unwrap(),
+            b"\x1b[<64;1;1M"
+        );
     }
 }

@@ -11,8 +11,10 @@ arboard = { version = "3.6.1", default-features = false }
 eframe = { version = "0.35.0", default-features = false, features = ["glow", "default_fonts"] }
 egui = { version = "0.35.0", default-features = false }
 memmap2 = "0.9.11"
+raw-window-handle = "0.6"
 rfd = "0.17.2"
 russh = { version = "0.63.3", default-features = false, features = ["ring", "rsa", "flate2"] }
+serialport = { version = "4.7", default-features = false }
 russh-sftp = "3.0.1"
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "sync", "fs", "io-util", "time", "net"] }
 

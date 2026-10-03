@@ -17,7 +17,12 @@ pub struct Client {
 
 impl Client {
     pub fn new(shared: Arc<Shared>, host: &str, port: u16) -> Self {
-        Self { shared, host: host.to_owned(), port, rejection: Arc::default() }
+        Self {
+            shared,
+            host: host.to_owned(),
+            port,
+            rejection: Arc::default(),
+        }
     }
 
     fn reject(&self, reason: String) -> bool {
@@ -29,7 +34,10 @@ impl Client {
 impl client::Handler for Client {
     type Error = russh::Error;
 
-    async fn check_server_key(&mut self, server_key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
+    async fn check_server_key(
+        &mut self,
+        server_key: &PublicKeyOrCertificate,
+    ) -> Result<bool, Self::Error> {
         let key = server_key.public_key();
         let fingerprint = key.fingerprint(HashAlg::Sha256);
         match keys::check_known_hosts(&self.host, self.port, &key) {

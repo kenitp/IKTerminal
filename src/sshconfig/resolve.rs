@@ -87,19 +87,39 @@ impl SshConfig {
         if depth > MAX_INCLUDE_DEPTH {
             return;
         }
-        let Ok(text) = std::fs::read_to_string(path) else { return };
-        self.sections.push(Section { condition, options: Vec::new() });
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        self.sections.push(Section {
+            condition,
+            options: Vec::new(),
+        });
         for line in text.lines() {
-            let Some((key, value)) = split_option(line) else { continue };
+            let Some((key, value)) = split_option(line) else {
+                continue;
+            };
             let key = key.to_ascii_lowercase();
             match key.as_str() {
                 "host" => {
-                    let patterns = split_args(value).into_iter().map(|p| p.to_ascii_lowercase()).collect();
-                    self.sections.push(Section { condition: Condition::Hosts(patterns), options: Vec::new() });
+                    let patterns = split_args(value)
+                        .into_iter()
+                        .map(|p| p.to_ascii_lowercase())
+                        .collect();
+                    self.sections.push(Section {
+                        condition: Condition::Hosts(patterns),
+                        options: Vec::new(),
+                    });
                 }
                 "match" => {
-                    let cond = if value.trim().eq_ignore_ascii_case("all") { Condition::Always } else { Condition::Never };
-                    self.sections.push(Section { condition: cond, options: Vec::new() });
+                    let cond = if value.trim().eq_ignore_ascii_case("all") {
+                        Condition::Always
+                    } else {
+                        Condition::Never
+                    };
+                    self.sections.push(Section {
+                        condition: cond,
+                        options: Vec::new(),
+                    });
                 }
                 "include" => {
                     let inherited = self.sections.last().expect("section").condition.clone();
@@ -107,9 +127,17 @@ impl SshConfig {
                         self.load_file(&file, inherited.clone(), depth + 1);
                     }
                     // Lines after an Include continue in the enclosing section.
-                    self.sections.push(Section { condition: inherited, options: Vec::new() });
+                    self.sections.push(Section {
+                        condition: inherited,
+                        options: Vec::new(),
+                    });
                 }
-                _ => self.sections.last_mut().expect("section").options.push((key, unquote(value).to_owned())),
+                _ => self
+                    .sections
+                    .last_mut()
+                    .expect("section")
+                    .options
+                    .push((key, unquote(value).to_owned())),
             }
         }
     }
@@ -119,7 +147,9 @@ impl SshConfig {
         let mut seen = Vec::<String>::new();
         let mut out = Vec::new();
         for section in &self.sections {
-            let Condition::Hosts(patterns) = &section.condition else { continue };
+            let Condition::Hosts(patterns) = &section.condition else {
+                continue;
+            };
             for p in patterns {
                 if p.contains(['*', '?', '!']) || seen.contains(p) {
                     continue;
@@ -131,10 +161,25 @@ impl SshConfig {
                 } else {
                     format!("{}@{}:{}", cfg.user, cfg.hostname, cfg.port)
                 };
-                out.push(HostEntry { alias: p.clone(), detail });
+                out.push(HostEntry {
+                    alias: p.clone(),
+                    detail,
+                });
             }
         }
         out
+    }
+
+    /// True when `host` is already an alias, or a configured hostname with the same port and user.
+    pub fn contains_target(&self, host: &str, user: Option<&str>, port: u16) -> bool {
+        self.hosts().iter().any(|entry| {
+            if entry.alias.eq_ignore_ascii_case(host) {
+                return true;
+            }
+            let resolved = self.resolve(&entry.alias);
+            let user_ok = user.is_none_or(|name| name.eq_ignore_ascii_case(&resolved.user));
+            resolved.hostname.eq_ignore_ascii_case(host) && resolved.port == port && user_ok
+        })
     }
 
     /// Resolves `target`, which is a host alias or `[user@]host[:port]`.
@@ -151,7 +196,11 @@ impl SshConfig {
 
         let mut opts: HashMap<&str, &str> = HashMap::new();
         let mut identity_files: Vec<&str> = Vec::new();
-        for section in self.sections.iter().filter(|s| s.condition.matches(&alias_lc)) {
+        for section in self
+            .sections
+            .iter()
+            .filter(|s| s.condition.matches(&alias_lc))
+        {
             for (k, v) in &section.options {
                 if k == "identityfile" {
                     identity_files.push(v);
@@ -161,9 +210,15 @@ impl SshConfig {
             }
         }
 
-        let hostname = opts.get("hostname").map_or_else(|| alias.to_owned(), |h| h.replace("%h", alias));
-        let port = port_override.or_else(|| opts.get("port").and_then(|p| p.parse().ok())).unwrap_or(22);
-        let user = user_override.or_else(|| opts.get("user").map(|u| u.to_string())).unwrap_or_else(local_user);
+        let hostname = opts
+            .get("hostname")
+            .map_or_else(|| alias.to_owned(), |h| h.replace("%h", alias));
+        let port = port_override
+            .or_else(|| opts.get("port").and_then(|p| p.parse().ok()))
+            .unwrap_or(22);
+        let user = user_override
+            .or_else(|| opts.get("user").map(|u| u.to_string()))
+            .unwrap_or_else(local_user);
         let identity_files = identity_files
             .into_iter()
             .filter(|f| !f.eq_ignore_ascii_case("none"))
@@ -172,7 +227,12 @@ impl SshConfig {
         let proxy_jump = opts
             .get("proxyjump")
             .filter(|v| !v.eq_ignore_ascii_case("none"))
-            .map(|v| v.split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect())
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
             .unwrap_or_default();
 
         HostConfig {
@@ -181,10 +241,18 @@ impl SshConfig {
             port,
             user,
             identity_files,
-            identities_only: opts.get("identitiesonly").is_some_and(|v| v.eq_ignore_ascii_case("yes")),
+            identities_only: opts
+                .get("identitiesonly")
+                .is_some_and(|v| v.eq_ignore_ascii_case("yes")),
             proxy_jump,
-            server_alive_interval: opts.get("serveraliveinterval").and_then(|v| v.parse().ok()).filter(|v| *v > 0),
-            connect_timeout: opts.get("connecttimeout").and_then(|v| v.parse().ok()).filter(|v| *v > 0),
+            server_alive_interval: opts
+                .get("serveraliveinterval")
+                .and_then(|v| v.parse().ok())
+                .filter(|v| *v > 0),
+            connect_timeout: opts
+                .get("connecttimeout")
+                .and_then(|v| v.parse().ok())
+                .filter(|v| *v > 0),
         }
     }
 }
@@ -198,7 +266,9 @@ pub fn ssh_dir() -> Option<PathBuf> {
 }
 
 fn local_user() -> String {
-    std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_default()
+    std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_default()
 }
 
 /// Splits whitespace-separated arguments, honoring double quotes.
@@ -224,18 +294,26 @@ fn split_args(value: &str) -> Vec<String> {
 }
 
 fn unquote(value: &str) -> &str {
-    value.strip_prefix('"').and_then(|v| v.strip_suffix('"')).unwrap_or(value)
+    value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .unwrap_or(value)
 }
 
 fn expand_home(path: &str) -> PathBuf {
-    match (path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")), home_dir()) {
+    match (
+        path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")),
+        home_dir(),
+    ) {
         (Some(rest), Some(home)) => home.join(rest),
         _ => PathBuf::from(path),
     }
 }
 
 fn expand_tokens(path: &str, hostname: &str, user: &str) -> PathBuf {
-    let home = home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
+    let home = home_dir()
+        .map(|h| h.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let expanded = path
         .replace("%d", &home)
         .replace("%u", &local_user())
@@ -253,16 +331,28 @@ fn expand_include(arg: &str) -> Vec<PathBuf> {
     {
         path = dir.join(path);
     }
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     if !name.contains(['*', '?']) {
         return vec![path];
     }
-    let Some(dir) = path.parent() else { return Vec::new() };
-    let Ok(read) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Some(dir) = path.parent() else {
+        return Vec::new();
+    };
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut files: Vec<PathBuf> = read
         .flatten()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-        .filter(|e| wildcard_match(&name.to_ascii_lowercase(), &e.file_name().to_string_lossy().to_ascii_lowercase()))
+        .filter(|e| {
+            wildcard_match(
+                &name.to_ascii_lowercase(),
+                &e.file_name().to_string_lossy().to_ascii_lowercase(),
+            )
+        })
         .map(|e| e.path())
         .collect();
     files.sort();
@@ -310,12 +400,24 @@ mod tests {
 
     #[test]
     fn first_value_wins_and_wildcards() {
-        let cfg = config("Host web\n  HostName 10.0.0.1\n  User alice\nHost *\n  User bob\n  Port 2200\n");
+        let cfg = config(
+            "Host web\n  HostName 10.0.0.1\n  User alice\nHost *\n  User bob\n  Port 2200\n",
+        );
         let h = cfg.resolve("web");
-        assert_eq!((h.hostname.as_str(), h.user.as_str(), h.port), ("10.0.0.1", "alice", 2200));
+        assert_eq!(
+            (h.hostname.as_str(), h.user.as_str(), h.port),
+            ("10.0.0.1", "alice", 2200)
+        );
         let o = cfg.resolve("carol@other:22");
-        assert_eq!((o.hostname.as_str(), o.user.as_str(), o.port), ("other", "carol", 22));
+        assert_eq!(
+            (o.hostname.as_str(), o.user.as_str(), o.port),
+            ("other", "carol", 22)
+        );
         assert_eq!(cfg.hosts().len(), 1);
+        assert!(cfg.contains_target("web", None, 2200));
+        assert!(cfg.contains_target("10.0.0.1", Some("alice"), 2200));
+        assert!(!cfg.contains_target("10.0.0.1", Some("carol"), 2200));
+        assert!(!cfg.contains_target("other", None, 22));
     }
 
     #[test]

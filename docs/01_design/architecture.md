@@ -9,6 +9,7 @@
 | SSH | russh 0.63 (`ring`) | Pure Rust。aws-lc は NASM が必要なため使わない |
 | SFTP | russh-sftp 3 | russh のチャネル上で動作 |
 | 非同期 | tokio (2 ワーカー) | SSH / SFTP の I/O 専用 |
+| シリアル | serialport 4 (`default-features = false`) | COM ポートの列挙と読み書き。libudev は使わない |
 | ダイアログ | rfd | OS 標準のファイル選択 |
 | クリップボード | arboard | 右クリック貼り付け (egui のイベントを介さない読み取り)。Linux は X11 と Wayland |
 | インストーラ | Inno Setup 6 | Windows の単一 exe 配布。Linux は tar.gz |
@@ -19,7 +20,7 @@
 app (オーケストレーション: タブ、ダイアログ、ショートカット)
  |-- ui        プレゼンテーション層 (egui 描画と入力)
  |-- session   アプリケーション層 (1 タブ = 端末 + バックエンド)
- |-- backend   I/O 層 (local / ssh / sftp)
+ |-- backend   I/O 層 (local / ssh / sftp / serial)
  |-- terminal  コア層 (端末状態と UI 非依存の共有状態)
  |-- sshconfig 独立モジュール (OpenSSH config の解決と編集)
  `-- settings  独立モジュール (設定の永続化)
@@ -35,24 +36,32 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 
 | パス | 役割 |
 | --- | --- |
-| `main.rs` | ウィンドウ設定と起動 |
+| `main.rs` | ウィンドウ設定と起動。OS のタイトルバーは出さない |
+| `launch.rs` | 起動引数のフォルダ解決 (`ikt .`) |
+| `frame.rs` | OS タイトルバーを消す (Windows では `WS_CAPTION` を外す) |
 | `app.rs` | 全体状態、タブ管理、バナー、ドロップ処理、ショートカット |
 | `settings.rs` | `Settings` の読み書き (`key=value`) |
-| `session.rs` | `Session`: `Term` と `Shared` の生成、ローカル / SSH の起動、リサイズ、終了処理 |
+| `session.rs` | `Session`: `Term` と `Shared` の生成、ローカル / SSH / シリアルの起動、リサイズ、終了処理 |
 | `terminal/shared.rs` | `Shared` (タイトル、状態、サイズ、`PtyIo`、問い合わせキュー)、`Listener` (端末イベント) |
 | `terminal/palette.rs` | 配色 (Tokyo Night) と色解決 |
 | `backend/mod.rs` | 共有 tokio ランタイム |
 | `backend/local.rs` | シェル検出、PTY 起動 (Windows は ConPTY、Linux は POSIX PTY。alacritty の `tty` + `EventLoop`) |
+| `backend/serial.rs` | COM ポートの列挙と、8N1 でのバイト転送 |
+| `backend/bitwarden.rs` | SSH 前に Bitwarden デスクトップが止まっていれば起動する |
 | `backend/ssh/mod.rs` | 接続 (ProxyJump の連鎖)、シェルチャネルの入出力ループ |
 | `backend/ssh/handler.rs` | ホスト鍵検証 (known_hosts) |
 | `backend/ssh/auth.rs` | 認証の順序制御 |
 | `backend/sftp.rs` | `SftpClient`: 一覧、操作、転送 (再帰・進捗・中止) |
 | `sshconfig/resolve.rs` | `SshConfig`: Include / Host / Match all の解決、ホスト一覧 |
 | `sshconfig/document.rs` | `Document`: 書式を保持した編集用モデル |
+| `sshconfig/command.rs` | シェル行から `ssh` コマンドを取り出し、config へ追記する |
 | `ui/theme.rs` | 色定数と egui スタイル |
 | `ui/fonts.rs` | システムフォントの mmap 読み込み、`TermFont` (セル寸法) |
 | `ui/widgets.rs` | 共通ウィジェット |
-| `ui/tabbar.rs`, `ui/sidebar.rs` | タブバー、サイドバー。操作は `TabAction` / `SidebarAction` で `app` に返す |
+| `ui/tabbar.rs`, `ui/sidebar.rs` | タブバー (ウィンドウ移動と新規タブメニューを含む)、サイドバー。操作は `TabAction` / `SidebarAction` で `app` に返す |
+| `ui/chrome.rs` | 枠なしウィンドウのリサイズ端 |
+| `ui/ssh_save_dialog.rs` | `ssh` コマンドを config に追加するか尋ねるダイアログ |
+| `ui/serial_dialog.rs` | COM ポートとボーレートの選択 |
 | `ui/terminal/view.rs` | 端末ウィジェット: 入力、選択、スクロール、IME |
 | `ui/terminal/render.rs` | グリッド描画 (背景、文字、装飾、カーソル、変換中文字列) |
 | `ui/terminal/input.rs` | キー / 貼り付け / マウスのエスケープシーケンス生成 |
@@ -68,6 +77,7 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 
 - ローカル: PTY (Windows は ConPTY、Linux は POSIX PTY) の出力を alacritty の `EventLoop` スレッドがパースして `Term` に反映する。完了したら `Listener` が `Wakeup` で再描画を要求する。
 - SSH: tokio タスクがチャネルのデータを `vte::ansi::Processor` に渡して `Term` に反映し、再描画を要求する。同期更新モード (DEC 2026) はタイムアウトで解除する。
+- シリアル: 専用スレッドが COM ポートを読み、同じパーサに渡す。ウィンドウサイズは端末グリッドだけを変える。
 - 描画: UI スレッドは毎フレーム `FairMutex` をロックしてグリッドを描画する。
 
 ### 4.2 端末入力
@@ -104,12 +114,18 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 - **config 編集の往復保持**: `Document` は行単位でオプションと生テキスト (コメント・空行) を保持する。変更した項目以外はそのまま書き戻す。
 - **Match**: `Match all` 以外の条件は評価できないため、一致しないものとして扱う。誤って設定が適用されるのを防ぐ。
 - **ホスト鍵**: 変更された鍵は常に拒否する。未登録の鍵はユーザーが承認した場合のみ登録する。
+- **枠なしウィンドウ**: タブバーをドラッグ領域にし、端のドラッグは `BeginResize` で OS に渡す。スナップと最小サイズは OS に任せる。Windows では `WS_CAPTION` を外す。winit がスタイル更新でビットを戻すため、戻っていたら毎フレーム外し直す。
+- **`ssh` の検出**: Enter の時点でカーソル行 (折り返しを含む) を読み、コマンド位置の `ssh` だけを解釈する。保存は `Document` 経由で、他の行を崩さない。
+- **起動フォルダ**: 引数があるときだけ作業ディレクトリにする。スタートメニュー起動時のカレントフォルダ (System32 など) は使わない。
+- **Bitwarden**: 設定が有効なときだけ、SSH 接続の直前にプロセスを確認する。未起動で実行ファイルが見つかった場合に起動し、`openssh-ssh-agent` のパイプを待ってから認証する。
+- **シリアル**: ポートの開閉は UI ではなく `backend::serial` が行う。失敗はダイアログに返し、成功したらタブを追加する。
 
 ## 6. ビルドと配布
 
 バージョンの正は `Cargo.toml` の `version` である。`scripts/version.sh` と `scripts/build-installer.ps1` はここから読む。Windows リソースの `FILEVERSION` はビルド時の `CARGO_PKG_VERSION` から生成する。
 
 - `build.rs` は Windows 向けビルドで、`assets/icon.ico` とパッケージバージョンからリソーススクリプトを生成して埋め込む。ウィンドウアイコンは `assets/icon-64.rgba`。
+- インストーラは `ikterminal.exe` と同一の `ikt.exe` を置き、インストール先をユーザーの PATH と App Paths に登録する。
 - release プロファイルの設定: `opt-level = "s"`、LTO、`codegen-units = 1`、strip。
 - `scripts/build-installer.ps1` の処理:
   1. `cargo build --release` を実行する。

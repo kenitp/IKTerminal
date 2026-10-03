@@ -9,7 +9,10 @@ fn main() {
 
     let version = std::env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION");
     let (major, minor, patch) = version_numbers(&version);
-    let icon = std::env::current_dir().expect("current dir").join("assets").join("icon.ico");
+    let icon = std::env::current_dir()
+        .expect("current dir")
+        .join("assets")
+        .join("icon.ico");
     let icon = icon.to_string_lossy().replace('\\', "/");
     let rc = format!(
         r#"1 ICON "{icon}"
@@ -50,7 +53,9 @@ END
 }
 
 fn version_numbers(version: &str) -> (u16, u16, u16) {
-    let mut parts = version.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty());
+    let mut parts = version
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty());
     let major = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let minor = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let patch = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);

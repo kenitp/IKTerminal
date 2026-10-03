@@ -46,7 +46,11 @@ pub fn apply(ctx: &egui::Context) {
     w.noninteractive.weak_bg_fill = PANEL;
     w.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
     w.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
-    for (state, fill) in [(&mut w.inactive, SURFACE), (&mut w.hovered, SURFACE_HOVER), (&mut w.active, SURFACE_HOVER)] {
+    for (state, fill) in [
+        (&mut w.inactive, SURFACE),
+        (&mut w.hovered, SURFACE_HOVER),
+        (&mut w.active, SURFACE_HOVER),
+    ] {
         state.bg_fill = fill;
         state.weak_bg_fill = fill;
         state.bg_stroke = Stroke::NONE;

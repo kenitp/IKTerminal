@@ -41,15 +41,27 @@ impl Frame<'_> {
     }
 
     fn text(&self, pos: Pos2, text: &str, color: Color32, bold: bool) {
-        self.painter.text(pos, Align2::LEFT_TOP, text, self.font.id.clone(), color);
+        self.painter
+            .text(pos, Align2::LEFT_TOP, text, self.font.id.clone(), color);
         if bold {
-            self.painter.text(pos + Vec2::new(0.6, 0.0), Align2::LEFT_TOP, text, self.font.id.clone(), color);
+            self.painter.text(
+                pos + Vec2::new(0.6, 0.0),
+                Align2::LEFT_TOP,
+                text,
+                self.font.id.clone(),
+                color,
+            );
         }
     }
 
     fn flush(&self, run: &mut Option<Run>) {
         if let Some(r) = run.take() {
-            self.text(self.cell_rect(r.col, r.row, 1).min, &r.text, r.color, r.bold);
+            self.text(
+                self.cell_rect(r.col, r.row, 1).min,
+                &r.text,
+                r.color,
+                r.bold,
+            );
         }
     }
 
@@ -72,13 +84,24 @@ impl Frame<'_> {
             if flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
                 continue;
             }
-            let Some(vp) = point_to_viewport(offset, indexed.point) else { continue };
+            let Some(vp) = point_to_viewport(offset, indexed.point) else {
+                continue;
+            };
             let (row, col) = (vp.line, vp.column.0);
-            let width = if flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
+            let width = if flags.contains(Flags::WIDE_CHAR) {
+                2
+            } else {
+                1
+            };
             let rect = self.cell_rect(col, row, width);
 
             let bold = flags.contains(Flags::BOLD);
-            let mut fg = theme::rgb(palette::resolve(cell.fg, colors, bold, flags.contains(Flags::DIM)));
+            let mut fg = theme::rgb(palette::resolve(
+                cell.fg,
+                colors,
+                bold,
+                flags.contains(Flags::DIM),
+            ));
             let mut bg = theme::rgb(palette::resolve(cell.bg, colors, false, false));
             if flags.contains(Flags::INVERSE) {
                 std::mem::swap(&mut fg, &mut bg);
@@ -91,7 +114,9 @@ impl Frame<'_> {
             }
 
             match &mut bg_run {
-                Some((r, c)) if *c == bg && r.max.x == rect.min.x && r.min.y == rect.min.y => r.max.x = rect.max.x,
+                Some((r, c)) if *c == bg && r.max.x == rect.min.x && r.min.y == rect.min.y => {
+                    r.max.x = rect.max.x
+                }
                 _ => {
                     if let Some((r, c)) = bg_run.take()
                         && c != default_bg
@@ -107,7 +132,8 @@ impl Frame<'_> {
                 self.painter.hline(rect.x_range(), y, Stroke::new(1.0, fg));
             }
             if flags.contains(Flags::STRIKEOUT) {
-                self.painter.hline(rect.x_range(), rect.center().y, Stroke::new(1.0, fg));
+                self.painter
+                    .hline(rect.x_range(), rect.center().y, Stroke::new(1.0, fg));
             }
 
             let c = cell.c;
@@ -123,7 +149,14 @@ impl Frame<'_> {
                     }
                     _ => {
                         self.flush(&mut run);
-                        run = Some(Run { row, col, end: col + 1, color: fg, bold, text: c.to_string() });
+                        run = Some(Run {
+                            row,
+                            col,
+                            end: col + 1,
+                            color: fg,
+                            bold,
+                            text: c.to_string(),
+                        });
                     }
                 }
             } else {
@@ -151,18 +184,29 @@ impl Frame<'_> {
         point: alacritty_terminal::index::Point,
         offset: usize,
     ) -> Rect {
-        let Some(vp) = point_to_viewport(offset, point) else { return Rect::NOTHING };
+        let Some(vp) = point_to_viewport(offset, point) else {
+            return Rect::NOTHING;
+        };
         let cell = &term.grid()[point];
-        let width = if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
+        let width = if cell.flags.contains(Flags::WIDE_CHAR) {
+            2
+        } else {
+            1
+        };
         let rect = self.cell_rect(vp.column.0, vp.line, width);
         let color = theme::rgb(palette::CURSOR);
 
         if !self.preedit.is_empty() {
-            let galley = self.painter.layout_no_wrap(self.preedit.to_owned(), self.font.id.clone(), theme::TEXT);
+            let galley = self.painter.layout_no_wrap(
+                self.preedit.to_owned(),
+                self.font.id.clone(),
+                theme::TEXT,
+            );
             let r = Rect::from_min_size(rect.min, Vec2::new(galley.size().x, rect.height()));
             self.painter.rect_filled(r, 0.0, theme::SURFACE_HOVER);
             self.painter.galley(r.min, galley, theme::TEXT);
-            self.painter.hline(r.x_range(), r.max.y - 1.0, Stroke::new(1.0, theme::ACCENT));
+            self.painter
+                .hline(r.x_range(), r.max.y - 1.0, Stroke::new(1.0, theme::ACCENT));
             return r;
         }
 
@@ -171,18 +215,32 @@ impl Frame<'_> {
             CursorShape::Block if self.focused => {
                 self.painter.rect_filled(rect, 0.0, color);
                 if cell.c != ' ' && cell.c != '\0' {
-                    self.text(rect.min, &cell.c.to_string(), theme::rgb(palette::BACKGROUND), false);
+                    self.text(
+                        rect.min,
+                        &cell.c.to_string(),
+                        theme::rgb(palette::BACKGROUND),
+                        false,
+                    );
                 }
             }
             CursorShape::Beam => {
-                self.painter.rect_filled(Rect::from_min_size(rect.min, Vec2::new(2.0, rect.height())), 0.0, color);
+                self.painter.rect_filled(
+                    Rect::from_min_size(rect.min, Vec2::new(2.0, rect.height())),
+                    0.0,
+                    color,
+                );
             }
             CursorShape::Underline => {
                 let bar = Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 2.0), rect.max);
                 self.painter.rect_filled(bar, 0.0, color);
             }
             _ => {
-                self.painter.rect_stroke(rect.shrink(0.5), 0.0, Stroke::new(1.0, color), egui::StrokeKind::Inside);
+                self.painter.rect_stroke(
+                    rect.shrink(0.5),
+                    0.0,
+                    Stroke::new(1.0, color),
+                    egui::StrokeKind::Inside,
+                );
             }
         }
         rect

@@ -4,7 +4,11 @@ use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 
 const fn rgb(hex: u32) -> Rgb {
-    Rgb { r: (hex >> 16) as u8, g: (hex >> 8) as u8, b: hex as u8 }
+    Rgb {
+        r: (hex >> 16) as u8,
+        g: (hex >> 8) as u8,
+        b: hex as u8,
+    }
 }
 
 pub const FOREGROUND: Rgb = rgb(0xc0caf5);
@@ -32,7 +36,11 @@ const ANSI: [Rgb; 16] = [
 ];
 
 fn dim(c: Rgb) -> Rgb {
-    Rgb { r: (c.r as u16 * 2 / 3) as u8, g: (c.g as u16 * 2 / 3) as u8, b: (c.b as u16 * 2 / 3) as u8 }
+    Rgb {
+        r: (c.r as u16 * 2 / 3) as u8,
+        g: (c.g as u16 * 2 / 3) as u8,
+        b: (c.b as u16 * 2 / 3) as u8,
+    }
 }
 
 /// Default value for any palette index (0..=255 plus the named extras).
@@ -42,7 +50,11 @@ pub fn default_color(index: usize) -> Rgb {
         0..=15 => ANSI[index],
         16..=231 => {
             let i = index - 16;
-            Rgb { r: CUBE[i / 36], g: CUBE[(i / 6) % 6], b: CUBE[i % 6] }
+            Rgb {
+                r: CUBE[i / 36],
+                g: CUBE[(i / 6) % 6],
+                b: CUBE[i % 6],
+            }
         }
         232..=255 => {
             let v = (8 + (index - 232) * 10) as u8;

@@ -3,9 +3,11 @@
 Rust 製の軽量タブ型ターミナル (Windows / Linux)。
 
 - ローカルシェル (PowerShell / cmd / WSL)
-- OpenSSH config を読み込む SSH 接続 (ProxyJump、エージェント、鍵、パスワード)
+- シリアル (COM)
+- OpenSSH config を読み込む SSH 接続 (ProxyJump、エージェント、鍵、パスワード)。設定で、未起動の Bitwarden を SSH 開始時に起動できる
 - SSH 接続上の SFTP ファイル転送
 - OpenSSH config の編集 (フォーム / テキスト)
+- エクスプローラーのアドレスバーで `ikt .` とすると、そのフォルダで起動する (インストール後)
 
 ## ビルド
 

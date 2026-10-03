@@ -116,7 +116,12 @@ impl Shared {
     /// Asks the user and waits for the answer. `None` means cancelled.
     pub async fn ask(&self, title: String, message: String, kind: PromptKind) -> Option<String> {
         let (reply, rx) = oneshot::channel();
-        self.prompts.lock().unwrap().push_back(Prompt { title, message, kind, reply });
+        self.prompts.lock().unwrap().push_back(Prompt {
+            title,
+            message,
+            kind,
+            reply,
+        });
         self.repaint();
         rx.await.ok().flatten()
     }
@@ -153,7 +158,9 @@ impl EventListener for Listener {
     fn send_event(&self, event: Event) {
         let shared = &self.0;
         match event {
-            Event::Wakeup | Event::MouseCursorDirty | Event::CursorBlinkingChange => shared.repaint(),
+            Event::Wakeup | Event::MouseCursorDirty | Event::CursorBlinkingChange => {
+                shared.repaint()
+            }
             Event::Title(title) => {
                 *shared.title.lock().unwrap() = title;
                 shared.repaint();
@@ -161,10 +168,12 @@ impl EventListener for Listener {
             Event::ResetTitle => {}
             Event::PtyWrite(text) => shared.write(Cow::Owned(text.into_bytes())),
             Event::ClipboardStore(_, text) => shared.ctx.copy_text(text),
-            Event::ColorRequest(index, format) => {
-                shared.write(Cow::Owned(format(palette::default_color(index)).into_bytes()))
+            Event::ColorRequest(index, format) => shared.write(Cow::Owned(
+                format(palette::default_color(index)).into_bytes(),
+            )),
+            Event::TextAreaSizeRequest(format) => {
+                shared.write(Cow::Owned(format(shared.size()).into_bytes()))
             }
-            Event::TextAreaSizeRequest(format) => shared.write(Cow::Owned(format(shared.size()).into_bytes())),
             Event::ChildExit(_) | Event::Exit => shared.set_status(Status::Exited(String::new())),
             Event::ClipboardLoad(..) | Event::Bell => {}
         }

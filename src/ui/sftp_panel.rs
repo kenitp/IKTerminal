@@ -47,7 +47,9 @@ impl SftpView {
 
         self.toolbar(ui, client, &cwd);
         let path = ui.add(
-            egui::TextEdit::singleline(&mut self.path_input).id(ui.id().with("path")).desired_width(f32::INFINITY),
+            egui::TextEdit::singleline(&mut self.path_input)
+                .id(ui.id().with("path"))
+                .desired_width(f32::INFINITY),
         );
         if path.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             client.open_dir(self.path_input.trim().to_owned());
@@ -86,7 +88,9 @@ impl SftpView {
             if flat_button(ui, "新規フォルダ").clicked() {
                 self.dialog = Some(Dialog::NewFolder(String::new()));
             }
-            if flat_button(ui, "アップロード").on_hover_text("ファイルをドロップしてもアップロードできます").clicked()
+            if flat_button(ui, "アップロード")
+                .on_hover_text("ファイルをドロップしてもアップロードできます")
+                .clicked()
                 && let Some(files) = rfd::FileDialog::new().pick_files()
             {
                 client.upload(files);
@@ -120,9 +124,15 @@ impl SftpView {
                 self.download(client, entry);
             }
             if ui.button("名前を変更").clicked() {
-                self.dialog = Some(Dialog::Rename { from: entry.name.clone(), to: entry.name.clone() });
+                self.dialog = Some(Dialog::Rename {
+                    from: entry.name.clone(),
+                    to: entry.name.clone(),
+                });
             }
-            if ui.button(RichText::new("削除").color(theme::DANGER)).clicked() {
+            if ui
+                .button(RichText::new("削除").color(theme::DANGER))
+                .clicked()
+            {
                 self.dialog = Some(Dialog::Delete(entry.clone()));
             }
         });
@@ -158,49 +168,72 @@ impl SftpView {
                 }
             });
         });
-        egui::ScrollArea::vertical().id_salt("transfers").max_height(5.0 * 46.0).show(ui, |ui| {
-            for t in transfers.iter().rev() {
-                let total = t.total.load(Ordering::Relaxed);
-                let done = t.done.load(Ordering::Relaxed);
-                let state = t.state();
-                ui.horizontal(|ui| {
-                    let arrow = if t.upload { "\u{2191}" } else { "\u{2193}" };
-                    ui.label(RichText::new(format!("{arrow} {}", t.label)).size(12.5));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match &state {
-                        TransferState::Running => {
-                            if flat_button(ui, "中止").clicked() {
-                                t.cancel();
+        egui::ScrollArea::vertical()
+            .id_salt("transfers")
+            .max_height(5.0 * 46.0)
+            .show(ui, |ui| {
+                for t in transfers.iter().rev() {
+                    let total = t.total.load(Ordering::Relaxed);
+                    let done = t.done.load(Ordering::Relaxed);
+                    let state = t.state();
+                    ui.horizontal(|ui| {
+                        let arrow = if t.upload { "\u{2191}" } else { "\u{2193}" };
+                        ui.label(RichText::new(format!("{arrow} {}", t.label)).size(12.5));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            match &state {
+                                TransferState::Running => {
+                                    if flat_button(ui, "中止").clicked() {
+                                        t.cancel();
+                                    }
+                                }
+                                TransferState::Done => {
+                                    ui.label(
+                                        RichText::new("完了").color(theme::SUCCESS).size(12.0),
+                                    );
+                                }
+                                TransferState::Cancelled => {
+                                    ui.label(
+                                        RichText::new("中止").color(theme::WARNING).size(12.0),
+                                    );
+                                }
+                                TransferState::Failed(e) => {
+                                    ui.label(RichText::new("失敗").color(theme::DANGER).size(12.0))
+                                        .on_hover_text(e);
+                                }
                             }
-                        }
-                        TransferState::Done => {
-                            ui.label(RichText::new("完了").color(theme::SUCCESS).size(12.0));
-                        }
-                        TransferState::Cancelled => {
-                            ui.label(RichText::new("中止").color(theme::WARNING).size(12.0));
-                        }
-                        TransferState::Failed(e) => {
-                            ui.label(RichText::new("失敗").color(theme::DANGER).size(12.0)).on_hover_text(e);
-                        }
+                        });
                     });
-                });
-                let fraction = if total == 0 { 1.0 } else { done as f32 / total as f32 };
-                let fill = match state {
-                    TransferState::Failed(_) => theme::DANGER,
-                    TransferState::Cancelled => theme::WARNING,
-                    _ => theme::ACCENT,
-                };
-                ui.add(
-                    egui::ProgressBar::new(fraction.min(1.0))
-                        .desired_height(6.0)
-                        .fill(fill)
-                        .text(RichText::new(format!("{} / {}", format_size(done), format_size(total))).size(10.0)),
-                );
-            }
-        });
+                    let fraction = if total == 0 {
+                        1.0
+                    } else {
+                        done as f32 / total as f32
+                    };
+                    let fill = match state {
+                        TransferState::Failed(_) => theme::DANGER,
+                        TransferState::Cancelled => theme::WARNING,
+                        _ => theme::ACCENT,
+                    };
+                    ui.add(
+                        egui::ProgressBar::new(fraction.min(1.0))
+                            .desired_height(6.0)
+                            .fill(fill)
+                            .text(
+                                RichText::new(format!(
+                                    "{} / {}",
+                                    format_size(done),
+                                    format_size(total)
+                                ))
+                                .size(10.0),
+                            ),
+                    );
+                }
+            });
     }
 
     fn dialog(&mut self, ui: &mut Ui, client: &SftpClient) {
-        let Some(dialog) = &mut self.dialog else { return };
+        let Some(dialog) = &mut self.dialog else {
+            return;
+        };
         let mut close = false;
         egui::Modal::new(egui::Id::new("sftp-dialog")).show(ui.ctx(), |ui| {
             ui.set_width(320.0);
@@ -217,14 +250,21 @@ impl SftpView {
                 }
                 Dialog::Delete(entry) => {
                     ui.heading("削除の確認");
-                    let what = if entry.is_dir { "フォルダとその中身" } else { "ファイル" };
+                    let what = if entry.is_dir {
+                        "フォルダとその中身"
+                    } else {
+                        "ファイル"
+                    };
                     ui.label(format!("{what}「{}」を削除しますか?", entry.name));
                     true
                 }
             };
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let ok = ui.add_enabled_ui(confirm, |ui| primary_button(ui, "OK")).inner.clicked()
+                let ok = ui
+                    .add_enabled_ui(confirm, |ui| primary_button(ui, "OK"))
+                    .inner
+                    .clicked()
                     || (confirm && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                 if ok {
                     match dialog {
@@ -234,7 +274,9 @@ impl SftpView {
                     }
                     close = true;
                 }
-                if ui.button("キャンセル").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if ui.button("キャンセル").clicked()
+                    || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                {
                     close = true;
                 }
             });

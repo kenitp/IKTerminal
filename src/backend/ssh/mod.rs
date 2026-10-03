@@ -52,17 +52,25 @@ impl PtyIo for SshIo {
 }
 
 /// Connects in the background and runs an interactive shell in `term`.
-pub fn spawn(shared: Arc<Shared>, term: TermHandle, target: HostConfig, jumps: Vec<HostConfig>) -> Link {
+pub fn spawn(
+    shared: Arc<Shared>,
+    term: TermHandle,
+    target: HostConfig,
+    jumps: Vec<HostConfig>,
+    launch_bitwarden: bool,
+) -> Link {
     let link = Link::default();
     let (tx, rx) = mpsc::unbounded_channel();
     shared.set_io(Box::new(SshIo(tx)));
     let task_link = link.clone();
     super::runtime().spawn(async move {
-        let result = match connect(&shared, &target, &jumps).await {
+        let result = match connect(&shared, &target, &jumps, launch_bitwarden).await {
             Ok(conn) => {
                 let conn = Arc::new(conn);
                 let _ = task_link.set(conn.clone());
-                run_shell(&shared, &term, &conn, rx).await.map_err(|e| e.to_string())
+                run_shell(&shared, &term, &conn, rx)
+                    .await
+                    .map_err(|e| e.to_string())
             }
             Err(e) => Err(e),
         };
@@ -84,7 +92,11 @@ fn client_config(host: &HostConfig) -> Arc<client::Config> {
 }
 
 /// Opens a TCP (or tunneled) connection to `host` and authenticates.
-async fn open(shared: &Arc<Shared>, host: &HostConfig, via: Option<&Handle<Client>>) -> Result<Handle<Client>, String> {
+async fn open(
+    shared: &Arc<Shared>,
+    host: &HostConfig,
+    via: Option<&Handle<Client>>,
+) -> Result<Handle<Client>, String> {
     let client = Client::new(shared.clone(), &host.hostname, host.port);
     let rejection = client.rejection.clone();
     let config = client_config(host);
@@ -95,7 +107,12 @@ async fn open(shared: &Arc<Shared>, host: &HostConfig, via: Option<&Handle<Clien
     let timed_out = || format!("{target} への接続がタイムアウトしました");
     let handshake = match via {
         Some(jump) => {
-            let opening = jump.channel_open_direct_tcpip(host.hostname.as_str(), host.port as u32, "127.0.0.1", 0);
+            let opening = jump.channel_open_direct_tcpip(
+                host.hostname.as_str(),
+                host.port as u32,
+                "127.0.0.1",
+                0,
+            );
             let channel = tokio::time::timeout(timeout, opening)
                 .await
                 .map_err(|_| timed_out())?
@@ -103,27 +120,42 @@ async fn open(shared: &Arc<Shared>, host: &HostConfig, via: Option<&Handle<Clien
             client::connect_stream(config, channel.into_stream(), client).await
         }
         None => {
-            let stream = tokio::time::timeout(timeout, TcpStream::connect((host.hostname.as_str(), host.port)))
-                .await
-                .map_err(|_| timed_out())?
-                .map_err(|e| fail(&e))?;
+            let stream = tokio::time::timeout(
+                timeout,
+                TcpStream::connect((host.hostname.as_str(), host.port)),
+            )
+            .await
+            .map_err(|_| timed_out())?
+            .map_err(|e| fail(&e))?;
             let _ = stream.set_nodelay(true);
             client::connect_stream(config, stream, client).await
         }
     };
-    let mut handle = handshake.map_err(|e| rejection.lock().unwrap().take().unwrap_or_else(|| fail(&e)))?;
+    let mut handle =
+        handshake.map_err(|e| rejection.lock().unwrap().take().unwrap_or_else(|| fail(&e)))?;
     auth::authenticate(&mut handle, shared, host).await?;
     Ok(handle)
 }
 
-async fn connect(shared: &Arc<Shared>, target: &HostConfig, jumps: &[HostConfig]) -> Result<Connection, String> {
+async fn connect(
+    shared: &Arc<Shared>,
+    target: &HostConfig,
+    jumps: &[HostConfig],
+    launch_bitwarden: bool,
+) -> Result<Connection, String> {
+    if launch_bitwarden {
+        super::bitwarden::ensure_running().await;
+    }
     let mut chain: Vec<Handle<Client>> = Vec::with_capacity(jumps.len());
     for hop in jumps.iter().chain(std::iter::once(target)) {
         let handle = open(shared, hop, chain.last()).await?;
         chain.push(handle);
     }
     let handle = chain.pop().expect("target handle");
-    Ok(Connection { handle, _jumps: chain })
+    Ok(Connection {
+        handle,
+        _jumps: chain,
+    })
 }
 
 async fn run_shell(
@@ -135,7 +167,15 @@ async fn run_shell(
     let size = shared.size();
     let channel = conn.handle.channel_open_session().await?;
     channel
-        .request_pty(false, "xterm-256color", size.num_cols as u32, size.num_lines as u32, 0, 0, &[])
+        .request_pty(
+            false,
+            "xterm-256color",
+            size.num_cols as u32,
+            size.num_lines as u32,
+            0,
+            0,
+            &[],
+        )
         .await?;
     channel.request_shell(false).await?;
     let (mut reader, writer) = channel.split();
@@ -166,7 +206,10 @@ async fn run_shell(
             }
         }
     }
-    let _ = conn.handle.disconnect(Disconnect::ByApplication, "", "en").await;
+    let _ = conn
+        .handle
+        .disconnect(Disconnect::ByApplication, "", "en")
+        .await;
     Ok(())
 }
 

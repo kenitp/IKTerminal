@@ -10,11 +10,19 @@ pub struct Settings {
     /// Default shell command line. Empty selects the first detected shell.
     pub shell: String,
     pub scrollback: usize,
+    /// Start the Bitwarden desktop app before an SSH connection if it is not running.
+    pub launch_bitwarden: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { font_size: 14.0, font_path: String::new(), shell: String::new(), scrollback: 5000 }
+        Self {
+            font_size: 14.0,
+            font_path: String::new(),
+            shell: String::new(),
+            scrollback: 5000,
+            launch_bitwarden: true,
+        }
     }
 }
 
@@ -34,31 +42,54 @@ impl Settings {
 
     pub fn load() -> Self {
         let mut s = Settings::default();
-        let Some(text) = Self::path().and_then(|p| std::fs::read_to_string(p).ok()) else { return s };
+        let Some(text) = Self::path().and_then(|p| std::fs::read_to_string(p).ok()) else {
+            return s;
+        };
         for line in text.lines() {
-            let Some((key, value)) = line.split_once('=') else { continue };
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
             let value = value.trim();
             match key.trim() {
                 "font_size" => s.font_size = value.parse().unwrap_or(s.font_size),
                 "font_path" => s.font_path = value.to_owned(),
                 "shell" => s.shell = value.to_owned(),
                 "scrollback" => s.scrollback = value.parse().unwrap_or(s.scrollback),
+                "launch_bitwarden" => s.launch_bitwarden = parse_bool(value),
                 _ => {}
             }
         }
-        s.font_size = s.font_size.clamp(*Self::FONT_SIZE_RANGE.start(), *Self::FONT_SIZE_RANGE.end());
+        s.font_size = s
+            .font_size
+            .clamp(*Self::FONT_SIZE_RANGE.start(), *Self::FONT_SIZE_RANGE.end());
         s
     }
 
     pub fn save(&self) -> std::io::Result<()> {
-        let path = Self::path().ok_or_else(|| std::io::Error::other("config directory not found"))?;
+        let path =
+            Self::path().ok_or_else(|| std::io::Error::other("config directory not found"))?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
         let text = format!(
-            "font_size = {}\nfont_path = {}\nshell = {}\nscrollback = {}\n",
-            self.font_size, self.font_path, self.shell, self.scrollback
+            "font_size = {}\nfont_path = {}\nshell = {}\nscrollback = {}\nlaunch_bitwarden = {}\n",
+            self.font_size, self.font_path, self.shell, self.scrollback, self.launch_bitwarden
         );
         std::fs::write(path, text)
+    }
+}
+
+fn parse_bool(value: &str) -> bool {
+    matches!(value, "1" | "true" | "yes" | "on")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_bool;
+
+    #[test]
+    fn bool_flag() {
+        assert!(parse_bool("true"));
+        assert!(!parse_bool("false"));
     }
 }

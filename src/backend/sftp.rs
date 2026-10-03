@@ -62,7 +62,11 @@ impl Transfer {
     }
 
     fn check(&self) -> Result<(), TransferError> {
-        if self.cancel.load(Ordering::Relaxed) { Err(TransferError::Cancelled) } else { Ok(()) }
+        if self.cancel.load(Ordering::Relaxed) {
+            Err(TransferError::Cancelled)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -105,9 +109,18 @@ impl SftpClient {
         self.session
             .get_or_try_init(|| async {
                 let conn = self.link.get().ok_or("SSH 接続が確立していません")?.clone();
-                let channel = conn.handle.channel_open_session().await.map_err(|e| e.to_string())?;
-                channel.request_subsystem(true, "sftp").await.map_err(|e| e.to_string())?;
-                let sftp = SftpSession::new(channel.into_stream()).await.map_err(|e| e.to_string())?;
+                let channel = conn
+                    .handle
+                    .channel_open_session()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                channel
+                    .request_subsystem(true, "sftp")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let sftp = SftpSession::new(channel.into_stream())
+                    .await
+                    .map_err(|e| e.to_string())?;
                 Ok::<_, String>(Arc::new(sftp))
             })
             .await
@@ -161,14 +174,23 @@ impl SftpClient {
                 }
             })
             .collect();
-        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+        entries.sort_by(|a, b| {
+            b.is_dir
+                .cmp(&a.is_dir)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
         Ok((cwd, entries))
     }
 
     /// Runs a simple remote operation and refreshes the listing afterwards.
     fn run_op<F>(&self, op: F)
     where
-        F: for<'a> FnOnce(&'a SftpSession) -> BoxFuture<'a, Result<(), russh_sftp::client::error::Error>> + Send + 'static,
+        F: for<'a> FnOnce(
+                &'a SftpSession,
+            )
+                -> BoxFuture<'a, Result<(), russh_sftp::client::error::Error>>
+            + Send
+            + 'static,
     {
         let this = self.clone();
         runtime().spawn(async move {
@@ -198,7 +220,13 @@ impl SftpClient {
         let path = join(&self.cwd(), &entry.name);
         let is_dir = entry.is_dir;
         self.run_op(move |s| {
-            Box::pin(async move { if is_dir { remove_tree(s, path).await } else { s.remove_file(path).await } })
+            Box::pin(async move {
+                if is_dir {
+                    remove_tree(s, path).await
+                } else {
+                    s.remove_file(path).await
+                }
+            })
         });
     }
 
@@ -226,14 +254,19 @@ impl SftpClient {
     }
 
     pub fn clear_finished(&self) {
-        self.transfers.lock().unwrap().retain(|t| t.state() == TransferState::Running);
+        self.transfers
+            .lock()
+            .unwrap()
+            .retain(|t| t.state() == TransferState::Running);
     }
 
     /// Uploads local files or directories into the current remote directory.
     pub fn upload(&self, paths: Vec<PathBuf>) {
         let remote_dir = self.cwd();
         for local in paths {
-            let Some(name) = local.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+            let Some(name) = local.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+                continue;
+            };
             let t = self.start_transfer(name.clone(), true);
             let this = self.clone();
             let remote = join(&remote_dir, &name);
@@ -260,17 +293,27 @@ impl SftpClient {
             t.check()?;
             if local.is_dir() {
                 if !sftp.try_exists(remote.as_str()).await.unwrap_or(false) {
-                    sftp.create_dir(remote.as_str()).await.map_err(|e| format!("{remote}: {e}"))?;
+                    sftp.create_dir(remote.as_str())
+                        .await
+                        .map_err(|e| format!("{remote}: {e}"))?;
                 }
-                let mut children = tokio::fs::read_dir(local).await.map_err(|e| e.to_string())?;
+                let mut children = tokio::fs::read_dir(local)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 while let Some(child) = children.next_entry().await.map_err(|e| e.to_string())? {
                     let name = child.file_name().to_string_lossy().into_owned();
-                    self.upload_path(sftp, &child.path(), join(&remote, &name), t).await?;
+                    self.upload_path(sftp, &child.path(), join(&remote, &name), t)
+                        .await?;
                 }
                 return Ok(());
             }
-            let mut src = tokio::fs::File::open(local).await.map_err(|e| format!("{}: {e}", local.display()))?;
-            let mut dst = sftp.create(remote.as_str()).await.map_err(|e| format!("{remote}: {e}"))?;
+            let mut src = tokio::fs::File::open(local)
+                .await
+                .map_err(|e| format!("{}: {e}", local.display()))?;
+            let mut dst = sftp
+                .create(remote.as_str())
+                .await
+                .map_err(|e| format!("{remote}: {e}"))?;
             self.pump(&mut src, &mut dst, t).await?;
             Ok(dst.shutdown().await.map_err(|e| e.to_string())?)
         })
@@ -287,8 +330,12 @@ impl SftpClient {
             runtime().spawn(async move {
                 let result = match this.sftp().await {
                     Ok(sftp) => {
-                        t.total.store(remote_size(&sftp, remote.clone(), entry.is_dir).await, Ordering::Relaxed);
-                        this.download_path(&sftp, remote, entry.is_dir, &local, &t).await
+                        t.total.store(
+                            remote_size(&sftp, remote.clone(), entry.is_dir).await,
+                            Ordering::Relaxed,
+                        );
+                        this.download_path(&sftp, remote, entry.is_dir, &local, &t)
+                            .await
                     }
                     Err(e) => Err(e.into()),
                 };
@@ -308,18 +355,34 @@ impl SftpClient {
         Box::pin(async move {
             t.check()?;
             if is_dir {
-                tokio::fs::create_dir_all(local).await.map_err(|e| format!("{}: {e}", local.display()))?;
-                let children = sftp.read_dir(remote.as_str()).await.map_err(|e| format!("{remote}: {e}"))?;
+                tokio::fs::create_dir_all(local)
+                    .await
+                    .map_err(|e| format!("{}: {e}", local.display()))?;
+                let children = sftp
+                    .read_dir(remote.as_str())
+                    .await
+                    .map_err(|e| format!("{remote}: {e}"))?;
                 for child in children.filter(|c| c.file_name() != "." && c.file_name() != "..") {
                     let name = child.file_name();
                     let child_local = local.join(&name);
-                    self.download_path(sftp, join(&remote, &name), child.file_type().is_dir(), &child_local, t).await?;
+                    self.download_path(
+                        sftp,
+                        join(&remote, &name),
+                        child.file_type().is_dir(),
+                        &child_local,
+                        t,
+                    )
+                    .await?;
                 }
                 return Ok(());
             }
-            let mut src = sftp.open(remote.as_str()).await.map_err(|e| format!("{remote}: {e}"))?;
-            let mut dst =
-                tokio::fs::File::create(local).await.map_err(|e| format!("{}: {e}", local.display()))?;
+            let mut src = sftp
+                .open(remote.as_str())
+                .await
+                .map_err(|e| format!("{remote}: {e}"))?;
+            let mut dst = tokio::fs::File::create(local)
+                .await
+                .map_err(|e| format!("{}: {e}", local.display()))?;
             self.pump(&mut src, &mut dst, t).await?;
             Ok(dst.flush().await.map_err(|e| e.to_string())?)
         })
@@ -376,9 +439,15 @@ fn local_size(path: &Path) -> u64 {
 fn remote_size(sftp: &SftpSession, path: String, is_dir: bool) -> BoxFuture<'_, u64> {
     Box::pin(async move {
         if !is_dir {
-            return sftp.metadata(path.as_str()).await.map(|m| m.len()).unwrap_or(0);
+            return sftp
+                .metadata(path.as_str())
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0);
         }
-        let Ok(children) = sftp.read_dir(path.as_str()).await else { return 0 };
+        let Ok(children) = sftp.read_dir(path.as_str()).await else {
+            return 0;
+        };
         let mut total = 0;
         for c in children.filter(|c| c.file_name() != "." && c.file_name() != "..") {
             total += if c.file_type().is_dir() {
@@ -391,7 +460,10 @@ fn remote_size(sftp: &SftpSession, path: String, is_dir: bool) -> BoxFuture<'_, 
     })
 }
 
-fn remove_tree(sftp: &SftpSession, path: String) -> BoxFuture<'_, Result<(), russh_sftp::client::error::Error>> {
+fn remove_tree(
+    sftp: &SftpSession,
+    path: String,
+) -> BoxFuture<'_, Result<(), russh_sftp::client::error::Error>> {
     Box::pin(async move {
         for c in sftp.read_dir(path.as_str()).await? {
             let name = c.file_name();
