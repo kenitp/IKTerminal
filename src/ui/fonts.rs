@@ -18,20 +18,41 @@ mod candidates {
         &[("BIZ-UDGothicR.ttc", 0), ("YuGothM.ttc", 0), ("meiryo.ttc", 0), ("msgothic.ttc", 0)];
     /// Yu Gothic UI / Meiryo UI cover Latin and Japanese with one baseline.
     pub const UI: &[(&str, u32)] = &[("YuGothM.ttc", 1), ("meiryo.ttc", 2), ("segoeui.ttf", 0)];
+    pub const UI_FALLBACK: &[(&str, u32)] = &[];
     pub const SYMBOLS: &[(&str, u32)] = &[("seguisym.ttf", 0)];
 }
 
 #[cfg(not(windows))]
 mod candidates {
     pub const MONO: &[(&str, u32)] = &[
+        ("truetype/jetbrains-mono/JetBrainsMono-Regular.ttf", 0),
+        ("truetype/cascadia/CascadiaMono.ttf", 0),
         ("truetype/dejavu/DejaVuSansMono.ttf", 0),
         ("TTF/DejaVuSansMono.ttf", 0),
         ("truetype/liberation/LiberationMono-Regular.ttf", 0),
+        ("truetype/noto/NotoSansMono-Regular.ttf", 0),
     ];
-    pub const CJK_MONO: &[(&str, u32)] =
-        &[("opentype/noto/NotoSansCJK-Regular.ttc", 0), ("noto-cjk/NotoSansCJK-Regular.ttc", 0)];
+    pub const CJK_MONO: &[(&str, u32)] = &[
+        ("opentype/noto/NotoSansCJK-Regular.ttc", 0),
+        ("opentype/noto/NotoSansCJK-VF.ttc", 0),
+        ("opentype/noto/NotoSansCJKjp-Regular.otf", 0),
+        ("noto-cjk/NotoSansCJK-Regular.ttc", 0),
+        ("noto-cjk/NotoSansCJK-VF.ttc", 0),
+        ("google-noto-cjk/NotoSansCJK-Regular.ttc", 0),
+        ("google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc", 0),
+        ("opentype/ipafont-gothic/ipag.ttf", 0),
+        ("truetype/ipafont-gothic/ipag.ttf", 0),
+    ];
     pub const UI: &[(&str, u32)] = CJK_MONO;
-    pub const SYMBOLS: &[(&str, u32)] = &[];
+    pub const UI_FALLBACK: &[(&str, u32)] = &[
+        ("truetype/noto/NotoSans-Regular.ttf", 0),
+        ("truetype/dejavu/DejaVuSans.ttf", 0),
+        ("TTF/DejaVuSans.ttf", 0),
+    ];
+    pub const SYMBOLS: &[(&str, u32)] = &[
+        ("truetype/noto/NotoSansSymbols2-Regular.ttf", 0),
+        ("truetype/noto/NotoSansSymbols-Regular.ttf", 0),
+    ];
 }
 
 fn font_dirs() -> Vec<PathBuf> {
@@ -43,7 +64,16 @@ fn font_dirs() -> Vec<PathBuf> {
         }
         dirs
     } else {
-        vec![PathBuf::from("/usr/share/fonts"), PathBuf::from("/usr/local/share/fonts")]
+        let mut dirs = vec![PathBuf::from("/usr/share/fonts"), PathBuf::from("/usr/local/share/fonts")];
+        if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
+            dirs.push(PathBuf::from(data).join("fonts"));
+        } else if let Some(home) = std::env::home_dir() {
+            dirs.push(home.join(".local/share/fonts"));
+        }
+        if let Some(home) = std::env::home_dir() {
+            dirs.push(home.join(".fonts"));
+        }
+        dirs
     }
 }
 
@@ -99,7 +129,7 @@ pub fn install(ctx: &egui::Context, settings: &Settings) {
     let mono = user.or_else(|| b.first(candidates::MONO));
     let cjk_mono = b.first(candidates::CJK_MONO);
     let symbols = b.first(candidates::SYMBOLS);
-    let ui = b.first(candidates::UI);
+    let ui = b.first(candidates::UI).or_else(|| b.first(candidates::UI_FALLBACK));
 
     let monospace = b.defs.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
     b.defs.families.insert(FontFamily::Name(TERM_FAMILY.into()), monospace);

@@ -62,7 +62,11 @@ impl SettingsDialog {
                     });
                     ui.add(
                         egui::TextEdit::singleline(&mut self.draft.shell)
-                            .hint_text("コマンドライン (例: pwsh -NoLogo)")
+                            .hint_text(if cfg!(windows) {
+                                "コマンドライン (例: pwsh -NoLogo)"
+                            } else {
+                                "コマンドライン (例: /bin/bash -l)"
+                            })
                             .desired_width(250.0),
                     );
                 });

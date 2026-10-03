@@ -8,6 +8,7 @@ Rust 製の軽量ターミナル。仕様は `docs/00_spec/`、設計は `docs/0
 - 検査: `cargo clippy --all-targets` (警告ゼロを維持)
 - テスト: `cargo test`
 - インストーラ: `.\scripts\build-installer.ps1`
+- Linux パッケージ: `./scripts/package-linux.sh`
 
 ## ルール
 

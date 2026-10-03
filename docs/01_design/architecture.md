@@ -10,8 +10,8 @@
 | SFTP | russh-sftp 3 | russh のチャネル上で動作 |
 | 非同期 | tokio (2 ワーカー) | SSH / SFTP の I/O 専用 |
 | ダイアログ | rfd | OS 標準のファイル選択 |
-| クリップボード | arboard | 右クリック貼り付け (egui のイベントを介さない読み取り) |
-| インストーラ | Inno Setup 6 | 単一 exe の配布に十分で軽量 |
+| クリップボード | arboard | 右クリック貼り付け (egui のイベントを介さない読み取り)。Linux は X11 と Wayland |
+| インストーラ | Inno Setup 6 | Windows の単一 exe 配布。Linux は tar.gz |
 
 ## 2. レイヤー構成
 
@@ -42,7 +42,7 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `terminal/shared.rs` | `Shared` (タイトル、状態、サイズ、`PtyIo`、問い合わせキュー)、`Listener` (端末イベント) |
 | `terminal/palette.rs` | 配色 (Tokyo Night) と色解決 |
 | `backend/mod.rs` | 共有 tokio ランタイム |
-| `backend/local.rs` | シェル検出、ConPTY 起動 (alacritty の `tty` + `EventLoop`) |
+| `backend/local.rs` | シェル検出、PTY 起動 (Windows は ConPTY、Linux は POSIX PTY。alacritty の `tty` + `EventLoop`) |
 | `backend/ssh/mod.rs` | 接続 (ProxyJump の連鎖)、シェルチャネルの入出力ループ |
 | `backend/ssh/handler.rs` | ホスト鍵検証 (known_hosts) |
 | `backend/ssh/auth.rs` | 認証の順序制御 |
@@ -66,7 +66,7 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 
 ### 4.1 端末出力
 
-- ローカル: ConPTY の出力を alacritty の `EventLoop` スレッドがパースして `Term` に反映する。完了したら `Listener` が `Wakeup` で再描画を要求する。
+- ローカル: PTY (Windows は ConPTY、Linux は POSIX PTY) の出力を alacritty の `EventLoop` スレッドがパースして `Term` に反映する。完了したら `Listener` が `Wakeup` で再描画を要求する。
 - SSH: tokio タスクがチャネルのデータを `vte::ansi::Processor` に渡して `Term` に反映し、再描画を要求する。同期更新モード (DEC 2026) はタイムアウトで解除する。
 - 描画: UI スレッドは毎フレーム `FairMutex` をロックしてグリッドを描画する。
 
@@ -100,16 +100,22 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
   - CJK フォールバックには TTC を使う。
   - スクロールバックは alacritty のリングバッファを使う。
 - **描画の効率化**: ASCII が連続するセルは 1 回のテキスト描画にまとめる。背景は予約したシェイプスロットに入れて文字の下に描く。
-- **UI フォント**: 欧文と和文のベースラインのずれを避けるため、和文 UI フォント (Yu Gothic UI、なければ Meiryo UI) を主に使う。
+- **UI フォント**: 欧文と和文のベースラインのずれを避けるため、Windows では和文 UI フォント (Yu Gothic UI、なければ Meiryo UI) を主に使う。Linux では Noto Sans CJK などが見つかればそれを使い、無ければ Noto Sans / DejaVu Sans に落とす。
 - **config 編集の往復保持**: `Document` は行単位でオプションと生テキスト (コメント・空行) を保持する。変更した項目以外はそのまま書き戻す。
 - **Match**: `Match all` 以外の条件は評価できないため、一致しないものとして扱う。誤って設定が適用されるのを防ぐ。
 - **ホスト鍵**: 変更された鍵は常に拒否する。未登録の鍵はユーザーが承認した場合のみ登録する。
 
 ## 6. ビルドと配布
 
-- `build.rs` で `assets/app.rc` (アイコン) を埋め込む。ウィンドウアイコンは `assets/icon-64.rgba`。
+バージョンの正は `Cargo.toml` の `version` である。`scripts/version.sh` と `scripts/build-installer.ps1` はここから読む。Windows リソースの `FILEVERSION` はビルド時の `CARGO_PKG_VERSION` から生成する。
+
+- `build.rs` は Windows 向けビルドで、`assets/icon.ico` とパッケージバージョンからリソーススクリプトを生成して埋め込む。ウィンドウアイコンは `assets/icon-64.rgba`。
 - release プロファイルの設定: `opt-level = "s"`、LTO、`codegen-units = 1`、strip。
 - `scripts/build-installer.ps1` の処理:
   1. `cargo build --release` を実行する。
   2. `Cargo.toml` のバージョンを `ISCC /DAppVersion` に渡して `installer/ikterminal.iss` をビルドする。
   3. `target/installer/` に出力する。
+- `scripts/package-linux.sh` は release バイナリを `target/dist/IkTerminal-<version>-linux-<arch>.tar.gz` にまとめる。実行時は libxcb、libxkbcommon、libxkbcommon-x11、OpenGL を動的に読む。
+- GitHub Actions
+  - `Build` は push と pull request で `.github/workflows/package.yml` を呼ぶ。Windows と Linux で clippy、テスト、配布物の生成を行う。
+  - `Release` は `main` への push で動く。`version` が push 前のコミットと異なり、`v<version>` タグが無いとき、同じ package ワークフローの成果物を GitHub Release に載せる。失敗した実行の再実行と、手動実行は、タグが無いときに Release を作る。
