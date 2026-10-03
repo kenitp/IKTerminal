@@ -1,7 +1,7 @@
-//! Local shell over the platform PTY (ConPTY on Windows).
+//! Local shell over the platform PTY (ConPTY on Windows, POSIX PTY on Linux).
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use alacritty_terminal::event::WindowSize;
@@ -29,25 +29,54 @@ impl ShellSpec {
 
 /// Shells available on this machine, most preferred first.
 pub fn detect_shells() -> Vec<ShellSpec> {
+    detect_platform_shells()
+}
+
+#[cfg(windows)]
+fn detect_platform_shells() -> Vec<ShellSpec> {
+    let system32 = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join("System32"));
     let mut shells = Vec::new();
+    let mut seen = HashSet::new();
     let mut add = |name: &str, program: Option<PathBuf>| {
-        if let Some(p) = program {
-            shells.push(ShellSpec { name: name.to_owned(), program: p.to_string_lossy().into_owned(), args: Vec::new() });
+        if let Some(program) = program.filter(|p| p.is_file()) {
+            push_shell(&mut shells, &mut seen, name, program);
         }
     };
-    if cfg!(windows) {
-        let system32 = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join("System32"));
-        add("PowerShell 7", find_in_path("pwsh.exe"));
-        add(
-            "Windows PowerShell",
-            system32.as_ref().map(|s| s.join("WindowsPowerShell\\v1.0\\powershell.exe")).filter(|p| p.exists()),
-        );
-        add("コマンド プロンプト", system32.as_ref().map(|s| s.join("cmd.exe")).filter(|p| p.exists()));
-        add("WSL", system32.as_ref().map(|s| s.join("wsl.exe")).filter(|p| p.exists()));
-    } else {
-        add("Shell", std::env::var_os("SHELL").map(PathBuf::from).or_else(|| Some(PathBuf::from("/bin/sh"))));
-    }
+    add("PowerShell 7", find_in_path("pwsh.exe"));
+    add(
+        "Windows PowerShell",
+        system32.as_ref().map(|s| s.join(r"WindowsPowerShell\v1.0\powershell.exe")),
+    );
+    add("コマンド プロンプト", system32.as_ref().map(|s| s.join("cmd.exe")));
+    add("WSL", system32.as_ref().map(|s| s.join("wsl.exe")));
     shells
+}
+
+#[cfg(not(windows))]
+fn detect_platform_shells() -> Vec<ShellSpec> {
+    let mut shells = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(program) = std::env::var_os("SHELL").map(PathBuf::from) {
+        let name = program.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "shell".to_owned());
+        push_shell(&mut shells, &mut seen, &name, program);
+    }
+    for (name, exe) in [("bash", "bash"), ("zsh", "zsh"), ("fish", "fish")] {
+        if let Some(program) = find_in_path(exe) {
+            push_shell(&mut shells, &mut seen, name, program);
+        }
+    }
+    push_shell(&mut shells, &mut seen, "sh", PathBuf::from("/bin/sh"));
+    shells
+}
+
+fn push_shell(shells: &mut Vec<ShellSpec>, seen: &mut HashSet<PathBuf>, name: &str, program: PathBuf) {
+    if !program.is_file() {
+        return;
+    }
+    let key = program.canonicalize().unwrap_or_else(|_| program.clone());
+    if seen.insert(key) {
+        shells.push(ShellSpec { name: name.to_owned(), program: program.to_string_lossy().into_owned(), args: Vec::new() });
+    }
 }
 
 fn find_in_path(exe: &str) -> Option<PathBuf> {
@@ -92,4 +121,16 @@ pub fn spawn(term: TermHandle, listener: Listener, shell: &ShellSpec) -> std::io
     shared.set_status(Status::Running);
     event_loop.spawn();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn detect_shells_points_at_existing_programs() {
+        let shells = super::detect_shells();
+        assert!(!shells.is_empty());
+        for shell in shells {
+            assert!(std::path::Path::new(&shell.program).is_file(), "{}", shell.program);
+        }
+    }
 }

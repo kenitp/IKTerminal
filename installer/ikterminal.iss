@@ -1,6 +1,6 @@
-; Inno Setup 6 script. Build with scripts\build-installer.ps1, which passes AppVersion.
+; Inno Setup 6 script. scripts\build-installer.ps1 passes AppVersion from Cargo.toml.
 #ifndef AppVersion
-  #define AppVersion "0.0.0"
+  #error AppVersion is required. Build with scripts\build-installer.ps1.
 #endif
 
 #define AppName "IkTerminal"

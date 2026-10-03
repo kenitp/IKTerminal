@@ -1,6 +1,6 @@
 # IkTerminal
 
-Rust 製の軽量タブ型ターミナル (Windows 向け)。
+Rust 製の軽量タブ型ターミナル (Windows / Linux)。
 
 - ローカルシェル (PowerShell / cmd / WSL)
 - OpenSSH config を読み込む SSH 接続 (ProxyJump、エージェント、鍵、パスワード)
@@ -9,10 +9,25 @@ Rust 製の軽量タブ型ターミナル (Windows 向け)。
 
 ## ビルド
 
-```powershell
-cargo build --release          # target\release\ikterminal.exe
-.\scripts\build-installer.ps1  # target\installer\IkTerminal-<version>-setup.exe (要 Inno Setup 6)
+バージョンは `Cargo.toml` の `version`。
+
+```sh
+cargo build --release
 ```
+
+Windows インストーラ (Inno Setup 6):
+
+```powershell
+.\scripts\build-installer.ps1  # target\installer\IkTerminal-<version>-setup.exe
+```
+
+Linux アーカイブ:
+
+```sh
+./scripts/package-linux.sh  # target/dist/IkTerminal-<version>-linux-<arch>.tar.gz
+```
+
+Linux の実行には libxcb、libxkbcommon、libxkbcommon-x11、OpenGL が必要。
 
 ## ドキュメント
 

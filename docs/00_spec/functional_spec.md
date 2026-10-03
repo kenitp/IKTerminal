@@ -1,6 +1,6 @@
 # IkTerminal 機能仕様
 
-軽量・省メモリを最優先とした Windows 向けタブ型ターミナル。ローカルシェル、SSH 接続、SFTP ファイル転送、OpenSSH config の編集を 1 つの実行ファイルで提供する。
+軽量・省メモリを最優先としたタブ型ターミナル (Windows / Linux)。ローカルシェル、SSH 接続、SFTP ファイル転送、OpenSSH config の編集を 1 つの実行ファイルで提供する。
 
 ## 1. 画面構成
 
@@ -28,7 +28,8 @@
 
 ## 3. ローカルシェル
 
-- 自動検出: PowerShell 7 (pwsh)、Windows PowerShell、コマンド プロンプト、WSL。
+- Windows の自動検出: PowerShell 7 (pwsh)、Windows PowerShell、コマンド プロンプト、WSL。
+- Linux の自動検出: `$SHELL`、PATH 上の bash / zsh / fish、`/bin/sh`。同じ実行ファイルは 1 回だけ載せる。
 - 設定で既定シェルを選択するか、任意のコマンドラインを指定できる。
 - 作業ディレクトリはホームディレクトリ。シェルが終了するとタブを閉じる。
 
@@ -84,7 +85,9 @@
 ## 7. 設定
 
 - 項目: フォントサイズ、フォントファイル (空なら自動選択)、既定シェル、スクロールバック行数。
-- 保存先: `%APPDATA%\IkTerminal\settings.conf` (`key=value` 形式)。
+- 保存先 (`key=value` 形式)
+  - Windows: `%APPDATA%\IkTerminal\settings.conf`
+  - Linux: `$XDG_CONFIG_HOME/IkTerminal/settings.conf`。未設定なら `~/.config/IkTerminal/settings.conf`
 
 ## 8. キーボードショートカット
 
@@ -96,11 +99,22 @@
 
 ## 9. 配布
 
-- 単一の実行ファイル (アイコン埋め込み) として配布する。
-- Inno Setup 6 による Windows インストーラを提供する。
-  - ユーザー単位 / 全ユーザーのどちらでもインストールできる。
-  - スタートメニューに登録する。デスクトップアイコンは任意。
-  - アンインストーラを含む。
+バージョンの正は `Cargo.toml` の `version` だけとする。Windows のファイルバージョン、インストーラ名、Linux アーカイブ名、Git タグ `v<version>` はすべてこれを参照する。
+
+- Windows
+  - 単一の実行ファイル (アイコンとバージョンリソースを埋め込む)。
+  - Inno Setup 6 によるインストーラ `IkTerminal-<version>-setup.exe`。
+    - ユーザー単位 / 全ユーザーのどちらでもインストールできる。
+    - スタートメニューに登録する。デスクトップアイコンは任意。
+    - アンインストーラを含む。
+- Linux
+  - 単一バイナリを `IkTerminal-<version>-linux-<arch>.tar.gz` で配布する。
+  - 実行時に libxcb、libxkbcommon、libxkbcommon-x11、OpenGL が必要。
+  - クリップボードは X11 と Wayland。ファイル選択は xdg-desktop-portal。
+  - 日本語表示には Noto Sans CJK などのシステムフォントを使う。
+- CI
+  - push と pull request で Windows と Linux を検査し、上記の配布物を作る。
+  - `main` へ push したとき、`version` が直前の `main` と異なり、タグ `v<version>` が無ければそのタグと GitHub Release を作る。同じコミットの再実行、または手動実行でも、タグが無ければ Release を作る。
 
 ## 10. 非機能要件
 
