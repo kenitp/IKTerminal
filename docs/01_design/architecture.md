@@ -13,6 +13,7 @@
 | ダイアログ | rfd | OS 標準のファイル選択 |
 | クリップボード | arboard | 右クリック貼り付け (egui のイベントを介さない読み取り)。Linux は X11 と Wayland |
 | インストーラ | Inno Setup 6 | Windows の単一 exe 配布。Linux は tar.gz |
+| 更新の HTTP | Windows は WinHTTP。Linux は ureq 2.9 (`rustls` + `ring`) | 暗号は ring に揃える。aws-lc は使わない |
 
 ## 2. レイヤー構成
 
@@ -23,7 +24,8 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
  |-- backend   I/O 層 (local / ssh / sftp / serial)
  |-- terminal  コア層 (端末状態と UI 非依存の共有状態)
  |-- sshconfig 独立モジュール (OpenSSH config の解決と編集)
- `-- settings  独立モジュール (設定の永続化)
+ |-- settings  独立モジュール (設定の永続化)
+ `-- update    独立モジュール (最新 Release の確認と適用)
 ```
 
 依存は上から下への一方向とする。
@@ -31,6 +33,7 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 - `terminal` は egui の `Context` (再描画要求) 以外の UI 要素に依存しない。
 - `backend` は `ui` を参照しない。ユーザーへの問い合わせ (パスワード、ホスト鍵確認) は `terminal::Shared::ask` でキューに積み、`ui::prompt_dialog` が取り出して応答する。
 - `sshconfig` と `settings` は他モジュールに依存しない。
+- `update` は `app` から使う。`ui` には依存しない。
 
 ## 3. モジュール
 
@@ -39,6 +42,7 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `main.rs` | ウィンドウ設定と起動。OS のタイトルバーは出さない |
 | `launch.rs` | 起動引数のフォルダ解決 (`ikt .`) |
 | `instance.rs` | 単一インスタンス。後続の起動は既存プロセスへフォルダを渡して終了する |
+| `update.rs` | 最新 Release の確認と、終了時の更新。`app` だけが使う |
 | `frame.rs` | OS タイトルバーを消す。Windows ではこのスレッドの winit ウィンドウから `WS_CAPTION` を外す |
 | `app.rs` | 全体状態、タブと複数ウィンドウ、バナー、ドロップ処理、ショートカット |
 | `settings.rs` | `Settings` の読み書き (`key=value`) |
@@ -118,6 +122,7 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 - **枠なしウィンドウ**: タブバーの空きをドラッグ領域にし、端のドラッグは `BeginResize` で OS に渡す。スナップと最小サイズは OS に任せる。Windows では `WS_CAPTION` を外す。winit がスタイル更新でビットを戻すため、戻っていたら毎フレーム外し直す。タブを切り離したウィンドウも同じ扱いである。
 - **タブの切り離し**: セッション (PTY / SSH) はプロセスをまたいで移せない。ドラッグで分けたウィンドウは同じプロセスの egui viewport として描く。子ウィンドウは親の再描画に合わせて描く。
 - **単一インスタンス**: 最初のプロセスが待つ。Windows はログオンセッションごとの名前付きパイプ、Linux はランタイムディレクトリの unix socket。後続プロセスはフォルダを 1 行送って終了する。受信側はフォーカス中のウィンドウにローカルタブを足す。
+- **更新**: リリースビルドだけが起動後に最新 Release を見る。確認とダウンロードは UI スレッドの外で行う。配布物は GitHub が付ける SHA-256 と照合してから、ルートウィンドウの終了時に適用する。Windows の取得は WinHTTP、Linux は rustls である。Windows はサイレントインストーラをプロセス終了後に実行し、Linux は実行中のバイナリを置き換える。
 - **起動フォルダ**: 引数があるときだけ作業ディレクトリにする。スタートメニュー起動時のカレントフォルダ (System32 など) は使わない。
 - **`ssh` の検出**: Enter の時点でカーソル行 (折り返しを含む) を読み、コマンド位置の `ssh` だけを解釈する。保存は `Document` 経由で、他の行を崩さない。
 - **Bitwarden**: 設定が有効なときだけ、SSH 接続の直前にプロセスを確認する。未起動なら、インストーラ版は `Bitwarden.exe`、Microsoft Store 版は `shell:AppsFolder` のアプリ ID で起動し、`openssh-ssh-agent` のパイプを待ってから認証する。

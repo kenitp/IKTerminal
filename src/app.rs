@@ -26,6 +26,7 @@ use crate::ui::sidebar::{Sidebar, SidebarAction};
 use crate::ui::ssh_save_dialog::{SshSaveDialog, SshSaveResult};
 use crate::ui::tabbar::{self, TabAction, TabInfo};
 use crate::ui::{chrome, terminal, theme};
+use crate::update::{self, StagedUpdate};
 
 const NEW_TAB: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::CTRL.plus(Modifiers::SHIFT), Key::T);
@@ -100,6 +101,9 @@ pub struct App {
     settings_desk: u64,
     ssh_dismissed: HashSet<String>,
     incoming: Receiver<Request>,
+    update_rx: Receiver<StagedUpdate>,
+    update: Option<StagedUpdate>,
+    update_launched: bool,
     icon: Arc<egui::IconData>,
 }
 
@@ -114,6 +118,8 @@ impl App {
         crate::frame::install(cc);
         let ctx = cc.egui_ctx.clone();
         instance::bind_wake(move || ctx.request_repaint());
+        let update_ctx = cc.egui_ctx.clone();
+        let update_rx = update::start(move || update_ctx.request_repaint());
         theme::apply(&cc.egui_ctx);
         fonts::install(&cc.egui_ctx, &settings);
         let ssh_config = SshConfig::load_default();
@@ -132,6 +138,9 @@ impl App {
             settings_desk: 0,
             ssh_dismissed: HashSet::new(),
             incoming,
+            update_rx,
+            update: None,
+            update_launched: false,
             icon: Arc::new(egui::IconData {
                 rgba: include_bytes!("../assets/icon-64.rgba").to_vec(),
                 width: 64,
@@ -306,6 +315,53 @@ impl App {
             let viewport = viewport_id(id);
             ctx.send_viewport_cmd_to(viewport, ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd_to(viewport, ViewportCommand::Focus);
+        }
+    }
+
+    fn poll_update(&mut self) {
+        if self.update.is_some() {
+            return;
+        }
+        if let Ok(staged) = self.update_rx.try_recv() {
+            self.update = Some(staged);
+        }
+    }
+
+    fn show_update_banner(&mut self, ui: &mut Ui) {
+        let text = {
+            let Some(update) = &self.update else {
+                return;
+            };
+            format!(
+                "IkTerminal {} があります。終了すると更新します",
+                update.version
+            )
+        };
+        if banner(ui, &text, theme::ACCENT, &["今はしない"]) {
+            self.discard_update();
+        }
+    }
+
+    fn on_root_close(&mut self, ctx: &egui::Context) {
+        if self.update.is_none() || self.update_launched {
+            return;
+        }
+        let Some(staged) = self.update.clone() else {
+            return;
+        };
+        match update::apply(&staged) {
+            Ok(()) => self.update_launched = true,
+            Err(error) => {
+                self.discard_update();
+                self.desks[0].notice = Some(format!("更新できません: {error}"));
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            }
+        }
+    }
+
+    fn discard_update(&mut self) {
+        if let Some(staged) = self.update.take() {
+            let _ = std::fs::remove_file(staged.path);
         }
     }
 
@@ -526,6 +582,7 @@ impl App {
     fn central(&mut self, ui: &mut Ui, index: usize, dialogs_open: bool) {
         let ctx = ui.ctx().clone();
         egui::CentralPanel::no_frame().show(ui, |ui| {
+            self.show_update_banner(ui);
             if let Some(msg) = self.desks[index].notice.clone()
                 && banner(ui, &msg, theme::DANGER, &["閉じる"])
             {
@@ -749,6 +806,10 @@ impl App {
         }
         if index == 0 {
             self.poll_launches(&ctx);
+            self.poll_update();
+            if ui.input(|i| i.viewport().close_requested()) {
+                self.on_root_close(&ctx);
+            }
         }
         if self.desks.get(index).is_some_and(|desk| desk.close) {
             ctx.send_viewport_cmd(ViewportCommand::Close);
