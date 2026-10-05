@@ -1,4 +1,4 @@
-//! Update a release build from the latest GitHub Release on exit.
+//! Update a release build from the latest GitHub Release when Ver.Up is pressed.
 //!
 //! The check and download run off the UI thread. The file is kept only when its
 //! SHA-256 matches the digest GitHub published for that asset.

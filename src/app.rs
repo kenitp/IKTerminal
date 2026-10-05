@@ -328,33 +328,38 @@ impl App {
     }
 
     fn show_update_banner(&mut self, ui: &mut Ui) {
+        if self.update_launched {
+            return;
+        }
         let text = {
             let Some(update) = &self.update else {
                 return;
             };
-            format!(
-                "IkTerminal {} があります。終了すると更新します",
-                update.version
-            )
+            format!("IkTerminal {} があります", update.version)
         };
-        if banner(ui, &text, theme::ACCENT, &["今はしない"]) {
-            self.discard_update();
+        let ctx = ui.ctx().clone();
+        match banner_choice(ui, &text, theme::ACCENT, &["今はしない", "Ver.Up"]) {
+            Some(0) => self.discard_update(),
+            Some(1) => self.start_update(&ctx),
+            _ => {}
         }
     }
 
-    fn on_root_close(&mut self, ctx: &egui::Context) {
-        if self.update.is_none() || self.update_launched {
+    fn start_update(&mut self, ctx: &egui::Context) {
+        if self.update_launched {
             return;
         }
         let Some(staged) = self.update.clone() else {
             return;
         };
         match update::apply(&staged) {
-            Ok(()) => self.update_launched = true,
+            Ok(()) => {
+                self.update_launched = true;
+                ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
+            }
             Err(error) => {
                 self.discard_update();
                 self.desks[0].notice = Some(format!("更新できません: {error}"));
-                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             }
         }
     }
@@ -808,9 +813,6 @@ impl App {
         if index == 0 {
             self.poll_launches(&ctx);
             self.poll_update();
-            if ui.input(|i| i.viewport().close_requested()) {
-                self.on_root_close(&ctx);
-            }
         }
         if self.desks.get(index).is_some_and(|desk| desk.close) {
             ctx.send_viewport_cmd(ViewportCommand::Close);
