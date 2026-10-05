@@ -7,7 +7,9 @@ pub fn of_process(pid: u32) -> Option<PathBuf> {
     if pid == 0 {
         return None;
     }
-    read(pid).filter(|path| !path.as_os_str().is_empty())
+    read(pid)
+        .map(tidy)
+        .filter(|path| !path.as_os_str().is_empty())
 }
 
 #[cfg(target_os = "linux")]
@@ -26,7 +28,7 @@ fn read(pid: u32) -> Option<PathBuf> {
 }
 
 /// Drops a trailing separator. A root (`C:\`, `/`) stays as it is.
-pub fn tidy(path: PathBuf) -> PathBuf {
+fn tidy(path: PathBuf) -> PathBuf {
     let text = path.to_string_lossy();
     let trimmed = text.trim_end_matches(['\\', '/']);
     if trimmed.is_empty() || is_drive_root(trimmed) || trimmed.len() == text.len() {
@@ -46,8 +48,6 @@ mod windows {
     use std::ffi::{OsString, c_void};
     use std::os::windows::ffi::OsStringExt;
     use std::path::PathBuf;
-
-    use super::tidy;
 
     const PROCESS_QUERY_INFORMATION: u32 = 0x0400;
     const PROCESS_VM_READ: u32 = 0x0010;
@@ -138,7 +138,7 @@ mod windows {
             .iter()
             .position(|unit| *unit == 0)
             .unwrap_or(units.len());
-        Some(tidy(PathBuf::from(OsString::from_wide(&units[..end]))))
+        Some(PathBuf::from(OsString::from_wide(&units[..end])))
     }
 
     fn open(pid: u32) -> Option<Process> {
