@@ -51,6 +51,7 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `terminal/palette.rs` | 配色 (Tokyo Night) と色解決 |
 | `backend/mod.rs` | 共有 tokio ランタイム |
 | `backend/local.rs` | シェル検出、PTY 起動 (Windows は ConPTY、Linux は POSIX PTY。alacritty の `tty` + `EventLoop`) |
+| `backend/cwd.rs` | ローカルシェルの作業ディレクトリ (Windows はプロセスの PEB、Linux は `/proc/<pid>/cwd`) |
 | `backend/serial.rs` | COM ポートの列挙と、8N1 でのバイト転送 |
 | `backend/bitwarden.rs` | SSH 前に Bitwarden デスクトップが止まっていれば起動する |
 | `backend/ssh/mod.rs` | 接続 (ProxyJump の連鎖)、シェルチャネルの入出力ループ |
@@ -63,7 +64,7 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `ui/theme.rs` | 色定数と egui スタイル |
 | `ui/fonts.rs` | システムフォントの mmap 読み込み、`TermFont` (セル寸法) |
 | `ui/widgets.rs` | 共通ウィジェット |
-| `ui/tabbar.rs`, `ui/sidebar.rs` | タブバー (ウィンドウ移動、タブの並べ替えと切り離し、新規タブメニュー)、サイドバー。操作は `TabAction` / `SidebarAction` で `app` に返す |
+| `ui/tabbar.rs`, `ui/sidebar.rs` | タブバー (ウィンドウ移動、タブの並べ替えと切り離し、新規タブメニュー、ディレクトリのホバー)、サイドバー。操作は `TabAction` / `SidebarAction` で `app` に返す |
 | `ui/chrome.rs` | 枠なしウィンドウのリサイズ端 |
 | `ui/ssh_save_dialog.rs` | `ssh` コマンドを config に追加するか尋ねるダイアログ |
 | `ui/serial_dialog.rs` | COM ポートとボーレートの選択 |
@@ -124,6 +125,7 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 - **単一インスタンス**: 最初のプロセスが待つ。Windows はログオンセッションごとの名前付きパイプ、Linux はランタイムディレクトリの unix socket。後続プロセスはフォルダを 1 行送って終了する。受信側はフォーカス中のウィンドウにローカルタブを足す。
 - **更新**: リリースビルドだけが起動後に最新 Release を見る。確認とダウンロードは UI スレッドの外で行う。配布物は GitHub が付ける SHA-256 と照合してから、ルートウィンドウの終了時に適用する。Windows の取得は WinHTTP、Linux は rustls である。Windows はサイレントインストーラをプロセス終了後に実行し、Linux は実行中のバイナリを置き換える。
 - **起動フォルダ**: 引数があるときだけ作業ディレクトリにする。スタートメニュー起動時のカレントフォルダ (System32 など) は使わない。
+- **タブのフォルダ名**: ローカルシェルのプロセスから作業ディレクトリを読む。UI は約 0.5 秒ごとに `session` 経由で取得し、`フォルダ · シェル名` とフルパスのホバーを描く。SSH とシリアルは対象外。WSL の Linux 側ディレクトリは読まない。
 - **`ssh` の検出**: Enter の時点でカーソル行 (折り返しを含む) を読み、コマンド位置の `ssh` だけを解釈する。保存は `Document` 経由で、他の行を崩さない。
 - **Bitwarden**: 設定が有効なときだけ、SSH 接続の直前にプロセスを確認する。未起動なら、インストーラ版は `Bitwarden.exe`、Microsoft Store 版は `shell:AppsFolder` のアプリ ID で起動し、`openssh-ssh-agent` のパイプを待ってから認証する。
 - **シリアル**: ポートの開閉は UI ではなく `backend::serial` が行う。失敗はダイアログに返し、成功したらタブを追加する。

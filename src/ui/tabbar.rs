@@ -13,6 +13,7 @@ use crate::terminal::Status;
 pub struct TabInfo {
     pub id: u64,
     pub title: String,
+    pub tooltip: String,
     pub status: Status,
 }
 
@@ -373,7 +374,7 @@ fn tab_widget(
     let middle = response.middle_clicked();
     let clicked = response.clicked();
     let drag_started = can_drag && response.drag_started() && !close.drag_started();
-    let response = response.on_hover_text(&tab.title);
+    let response = response.on_hover_text(&tab.tooltip);
     if can_drag {
         response.on_hover_cursor(egui::CursorIcon::Grab);
     }

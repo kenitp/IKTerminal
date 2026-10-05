@@ -443,7 +443,7 @@ impl App {
 
     fn update_title(&mut self, ctx: &egui::Context, index: usize) {
         let title = match self.desks[index].sessions.get(self.desks[index].active) {
-            Some(session) => format!("{} - IkTerminal", session.title()),
+            Some(session) => format!("{} - IkTerminal", session.tab_title()),
             None => "IkTerminal".to_owned(),
         };
         if title != self.desks[index].window_title {
@@ -459,7 +459,8 @@ impl App {
             .iter()
             .map(|session| TabInfo {
                 id: session.id,
-                title: session.title(),
+                title: session.tab_title(),
+                tooltip: session.tab_tooltip(),
                 status: session.status(),
             })
             .collect();

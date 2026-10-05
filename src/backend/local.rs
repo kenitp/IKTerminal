@@ -126,17 +126,22 @@ impl PtyIo for LocalIo {
     }
 }
 
-/// Starts `shell` in a PTY and feeds its output into `term`.
+/// Directory a new local shell starts in.
+pub fn startup_directory(directory: Option<&Path>) -> Option<PathBuf> {
+    directory.map(Path::to_path_buf).or_else(std::env::home_dir)
+}
+
+/// Starts `shell` in a PTY and feeds its output into `term`. Returns the shell pid.
 pub fn spawn(
     term: TermHandle,
     listener: Listener,
     shell: &ShellSpec,
     directory: Option<&Path>,
-) -> std::io::Result<()> {
+) -> std::io::Result<u32> {
     let shared = listener.0.clone();
     let options = tty::Options {
         shell: Some(tty::Shell::new(shell.program.clone(), shell.args.clone())),
-        working_directory: directory.map(Path::to_path_buf).or_else(std::env::home_dir),
+        working_directory: startup_directory(directory),
         drain_on_exit: true,
         env: HashMap::from([
             ("TERM".to_owned(), "xterm-256color".to_owned()),
@@ -146,11 +151,23 @@ pub fn spawn(
         escape_args: true,
     };
     let pty = tty::new(&options, shared.size(), 0)?;
+    let pid = shell_pid(&pty);
     let event_loop = EventLoop::new(term, listener, pty, options.drain_on_exit, false)?;
     shared.set_io(Box::new(LocalIo(event_loop.channel())));
     shared.set_status(Status::Running);
     event_loop.spawn();
-    Ok(())
+    Ok(pid)
+}
+
+fn shell_pid(pty: &tty::Pty) -> u32 {
+    #[cfg(windows)]
+    {
+        pty.child_watcher().pid().map(|pid| pid.get()).unwrap_or(0)
+    }
+    #[cfg(not(windows))]
+    {
+        pty.child().id()
+    }
 }
 
 #[cfg(test)]
