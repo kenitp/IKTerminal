@@ -114,7 +114,7 @@ fn apply_windows(installer: &Path) -> std::io::Result<()> {
         std::process::id(),
         ps_quote(&installer.display().to_string()),
     );
-    std::process::Command::new("powershell.exe")
+    std::process::Command::new(windows_powershell())
         .args([
             "-NoProfile",
             "-ExecutionPolicy",
@@ -149,6 +149,14 @@ fn needs_elevation() -> bool {
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => true,
         Err(_) => false,
     }
+}
+
+/// Windows PowerShell is not on `PATH` for a GUI process. Use the OS install path.
+#[cfg(windows)]
+fn windows_powershell() -> PathBuf {
+    let root =
+        std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+    root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe")
 }
 
 #[cfg(windows)]
@@ -716,6 +724,12 @@ fn http_get_unix(url: &str, accept: Option<&str>, limit: u64) -> Option<Vec<u8>>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_powershell_is_installed() {
+        assert!(super::windows_powershell().is_file());
+    }
 
     #[test]
     fn newer_version_is_a_greater_triple() {
