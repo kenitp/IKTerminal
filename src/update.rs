@@ -8,6 +8,8 @@ use std::io::Read;
 #[cfg(not(debug_assertions))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(not(debug_assertions))]
+use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver};
 #[cfg(not(debug_assertions))]
 use std::thread;
@@ -27,6 +29,18 @@ pub struct StagedUpdate {
     pub path: PathBuf,
 }
 
+/// Result of looking up the latest GitHub Release.
+pub enum Check {
+    #[cfg(debug_assertions)]
+    Skipped,
+    #[cfg(not(debug_assertions))]
+    UpToDate,
+    #[cfg(not(debug_assertions))]
+    Ready(StagedUpdate),
+    #[cfg(not(debug_assertions))]
+    Failed,
+}
+
 pub fn start(wake: impl Fn() + Send + 'static) -> Receiver<StagedUpdate> {
     let (tx, rx) = mpsc::channel();
     #[cfg(debug_assertions)]
@@ -36,9 +50,30 @@ pub fn start(wake: impl Fn() + Send + 'static) -> Receiver<StagedUpdate> {
         let _ = thread::Builder::new()
             .name("ikterm-update".to_owned())
             .spawn(move || {
-                if let Some(staged) = fetch()
+                if let Check::Ready(staged) = fetch()
                     && tx.send(staged).is_ok()
                 {
+                    wake();
+                }
+            });
+    }
+    rx
+}
+
+/// Looks up the latest release. Debug builds return [`Check::Skipped`] without using the network.
+pub fn check_now(wake: impl Fn() + Send + 'static) -> Receiver<Check> {
+    let (tx, rx) = mpsc::channel();
+    #[cfg(debug_assertions)]
+    {
+        let _ = tx.send(Check::Skipped);
+        drop(wake);
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = thread::Builder::new()
+            .name("ikterm-update".to_owned())
+            .spawn(move || {
+                if tx.send(fetch()).is_ok() {
                     wake();
                 }
             });
@@ -59,21 +94,35 @@ pub fn apply(staged: &StagedUpdate) -> std::io::Result<()> {
 }
 
 #[cfg(not(debug_assertions))]
-fn fetch() -> Option<StagedUpdate> {
-    let body = http_get(LATEST, Some("application/vnd.github+json"), JSON_LIMIT)?;
-    let json = String::from_utf8(body).ok()?;
-    let release = parse_release(&json)?;
+fn fetch() -> Check {
+    static GATE: Mutex<()> = Mutex::new(());
+    let _gate = GATE.lock().unwrap_or_else(|error| error.into_inner());
+    let Some(body) = http_get(LATEST, Some("application/vnd.github+json"), JSON_LIMIT) else {
+        return Check::Failed;
+    };
+    let Ok(json) = String::from_utf8(body) else {
+        return Check::Failed;
+    };
+    let Some(release) = parse_release(&json) else {
+        return Check::Failed;
+    };
     if !is_newer(&release.version, CURRENT) {
-        return None;
+        return Check::UpToDate;
     }
     let name = asset_name(&release.version);
-    let asset = release.assets.iter().find(|asset| asset.name == name)?;
-    let bytes = http_get(&asset.url, None, ASSET_LIMIT)?;
+    let Some(asset) = release.assets.iter().find(|asset| asset.name == name) else {
+        return Check::Failed;
+    };
+    let Some(bytes) = http_get(&asset.url, None, ASSET_LIMIT) else {
+        return Check::Failed;
+    };
     if sha256(&bytes) != asset.sha256 {
-        return None;
+        return Check::Failed;
     }
-    let path = stage(&release.version, &bytes).ok()?;
-    Some(StagedUpdate {
+    let Ok(path) = stage(&release.version, &bytes) else {
+        return Check::Failed;
+    };
+    Check::Ready(StagedUpdate {
         version: release.version,
         path,
     })

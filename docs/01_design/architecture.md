@@ -14,6 +14,7 @@
 | クリップボード | arboard | 右クリック貼り付け (egui のイベントを介さない読み取り)。Linux は X11 と Wayland |
 | インストーラ | Inno Setup 6 | Windows の単一 exe 配布。Linux は tar.gz |
 | 更新の HTTP | Windows は WinHTTP。Linux は ureq 2.9 (`rustls` + `ring`) | 暗号は ring に揃える。aws-lc は使わない |
+| タスクトレイ | tray-icon 0.26 (`default-features = false`)。Linux は `ksni` | Win32 と D-Bus。GTK は使わない |
 
 ## 2. レイヤー構成
 
@@ -25,6 +26,8 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
  |-- terminal  コア層 (端末状態と UI 非依存の共有状態)
  |-- sshconfig 独立モジュール (OpenSSH config の解決と編集)
  |-- settings  独立モジュール (設定の永続化)
+ |-- cursor    独立モジュール (SSH 上の cursor をローカル Cursor で開く)
+ |-- tray      独立モジュール (タスクトレイ常駐)
  `-- update    独立モジュール (最新 Release の確認と適用)
 ```
 
@@ -34,6 +37,8 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 - `backend` は `ui` を参照しない。ユーザーへの問い合わせ (パスワード、ホスト鍵確認) は `terminal::Shared::ask` でキューに積み、`ui::prompt_dialog` が取り出して応答する。
 - `sshconfig` と `settings` は他モジュールに依存しない。
 - `update` は `app` から使う。`ui` には依存しない。
+- `cursor` は `sshconfig` と `terminal::RemoteDir` だけを使う。起動は `app` が行う。
+- `tray` は `app` から使う。`ui` と `backend` には依存しない。
 
 ## 3. モジュール
 
@@ -46,8 +51,11 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `frame.rs` | OS タイトルバーを消す。Windows ではこのスレッドの winit ウィンドウから `WS_CAPTION` を外す |
 | `app.rs` | 全体状態、タブと複数ウィンドウ、バナー、ドロップ処理、ショートカット |
 | `settings.rs` | `Settings` の読み書き (`key=value`) |
+| `cursor.rs` | `cursor` 行の解釈、リモートパスの解決、Cursor の起動 |
+| `tray.rs` | タスクトレイのアイコンと「表示」「終了」 |
 | `session.rs` | `Session`: `Term` と `Shared` の生成、ローカル / SSH / シリアルの起動、リサイズ、終了処理 |
-| `terminal/shared.rs` | `Shared` (タイトル、状態、サイズ、`PtyIo`、問い合わせキュー)、`Listener` (端末イベント) |
+| `terminal/shared.rs` | `Shared` (タイトル、状態、サイズ、`PtyIo`、問い合わせキュー、SSH の作業ディレクトリ)、`Listener` (端末イベント) |
+| `terminal/osc.rs` | OSC 7 / 9;9 / 1337 から作業ディレクトリとホームを取り出す |
 | `terminal/palette.rs` | 配色 (Tokyo Night) と色解決 |
 | `backend/mod.rs` | 共有 tokio ランタイム |
 | `backend/local.rs` | シェル検出、PTY 起動 (Windows は ConPTY、Linux は POSIX PTY。alacritty の `tty` + `EventLoop`) |
@@ -123,12 +131,14 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 - **枠なしウィンドウ**: タブバーの空きをドラッグ領域にし、端のドラッグは `BeginResize` で OS に渡す。スナップと最小サイズは OS に任せる。Windows では `WS_CAPTION` を外す。winit がスタイル更新でビットを戻すため、戻っていたら毎フレーム外し直す。タブを切り離したウィンドウも同じ扱いである。
 - **タブの切り離し**: セッション (PTY / SSH) はプロセスをまたいで移せない。ドラッグで分けたウィンドウは同じプロセスの egui viewport として描く。子ウィンドウは親の再描画に合わせて描く。
 - **単一インスタンス**: 最初のプロセスが待つ。Windows はログオンセッションごとの名前付きパイプ、Linux はランタイムディレクトリの unix socket。後続プロセスはフォルダを 1 行送って終了する。受信側はフォーカス中のウィンドウにローカルタブを足す。
-- **更新**: リリースビルドだけが起動後に最新 Release を見る。確認とダウンロードは UI スレッドの外で行う。配布物は GitHub が付ける SHA-256 と照合してから、`Ver.Up` を押したときに適用し、アプリを終了する。Windows の取得は WinHTTP、Linux は rustls である。Windows は `SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe` を起動し、プロセス終了後にサイレントインストーラを実行する。Linux は実行中のバイナリを置き換える。
+- **更新**: リリースビルドだけが起動後、および設定の「更新を確認」で最新 Release を見る。確認とダウンロードは UI スレッドの外で行う。配布物は GitHub が付ける SHA-256 と照合してから、`Ver.Up` を押したときに適用し、アプリを終了する。終了しただけでは更新しない。Windows の取得は WinHTTP、Linux は rustls である。Windows は `SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe` を起動し、プロセス終了後にサイレントインストーラを実行する。Linux は実行中のバイナリを置き換える。ウィンドウを隠しているときに更新があれば、トレイのツールチップにバージョンを出す。
 - **起動フォルダ**: 引数があるときだけ作業ディレクトリにする。スタートメニュー起動時のカレントフォルダ (System32 など) は使わない。
 - **タブのフォルダ名**: ローカルシェルのプロセスから作業ディレクトリを読む。UI は約 0.5 秒ごとに `session` 経由で取得し、`フォルダ · シェル名` とフルパスのホバーを描く。SSH とシリアルは対象外。WSL の Linux 側ディレクトリは読まない。
 - **`ssh` の検出**: Enter の時点でカーソル行 (折り返しを含む) を読み、コマンド位置の `ssh` だけを解釈する。保存は `Document` 経由で、他の行を崩さない。
 - **Bitwarden**: 設定が有効なときだけ、SSH 接続の直前にプロセスを確認する。未起動なら、インストーラ版は `Bitwarden.exe`、Microsoft Store 版は `shell:AppsFolder` のアプリ ID で起動し、`openssh-ssh-agent` のパイプを待ってから認証する。
 - **シリアル**: ポートの開閉は UI ではなく `backend::serial` が行う。失敗はダイアログに返し、成功したらタブを追加する。
+- **タスクトレイ**: 設定が有効なときだけアイコンを出す。閉じる要求は取り消し、ウィンドウを隠す。アイコンの操作は egui の再描画を起こしてから UI スレッドで処理する。「終了」はプロセスを終わらせる。更新は `Ver.Up` で行う。Linux は KSNI (D-Bus) で、GTK はリンクしない。
+- **`cursor`**: Enter の時点で SSH セッションのコマンド位置にある単独の `cursor` だけを捕まえる。Enter は送らず、行頭までの入力を消す。パスはプロンプト、OSC、`cd`、接続時の `pwd` の順で絶対パスにする。決まらなければ OSC 1337 で `$PWD` と `$HOME` を一度問い合わせる。起動引数は `cursor --folder-uri vscode-remote://ssh-remote+<ホスト><パス>`。ホストは config のエイリアスを優先する。
 
 ## 6. ビルドと配布
 

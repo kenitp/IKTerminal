@@ -12,6 +12,8 @@ pub struct Settings {
     pub scrollback: usize,
     /// Start the Bitwarden desktop app before an SSH connection if it is not running.
     pub launch_bitwarden: bool,
+    /// Keep running in the notification area after the window is closed.
+    pub tray: bool,
 }
 
 impl Default for Settings {
@@ -22,6 +24,7 @@ impl Default for Settings {
             shell: String::new(),
             scrollback: 5000,
             launch_bitwarden: true,
+            tray: false,
         }
     }
 }
@@ -56,6 +59,7 @@ impl Settings {
                 "shell" => s.shell = value.to_owned(),
                 "scrollback" => s.scrollback = value.parse().unwrap_or(s.scrollback),
                 "launch_bitwarden" => s.launch_bitwarden = parse_bool(value),
+                "tray" => s.tray = parse_bool(value),
                 _ => {}
             }
         }
@@ -72,8 +76,13 @@ impl Settings {
             std::fs::create_dir_all(dir)?;
         }
         let text = format!(
-            "font_size = {}\nfont_path = {}\nshell = {}\nscrollback = {}\nlaunch_bitwarden = {}\n",
-            self.font_size, self.font_path, self.shell, self.scrollback, self.launch_bitwarden
+            "font_size = {}\nfont_path = {}\nshell = {}\nscrollback = {}\nlaunch_bitwarden = {}\ntray = {}\n",
+            self.font_size,
+            self.font_path,
+            self.shell,
+            self.scrollback,
+            self.launch_bitwarden,
+            self.tray
         );
         std::fs::write(path, text)
     }

@@ -10,11 +10,14 @@ use crate::settings::Settings;
 pub enum SettingsResult {
     Saved(Settings),
     Closed,
+    CheckUpdate,
 }
 
 pub struct SettingsDialog {
     draft: Settings,
     error: Option<String>,
+    checking_update: bool,
+    update_message: Option<String>,
 }
 
 impl SettingsDialog {
@@ -22,7 +25,14 @@ impl SettingsDialog {
         Self {
             draft: settings.clone(),
             error: None,
+            checking_update: false,
+            update_message: None,
         }
+    }
+
+    pub fn finish_update_check(&mut self, message: String) {
+        self.checking_update = false;
+        self.update_message = Some(message);
     }
 
     pub fn show(&mut self, ctx: &egui::Context, shells: &[ShellSpec]) -> Option<SettingsResult> {
@@ -114,12 +124,31 @@ impl SettingsDialog {
                         "SSH 開始時に、起動していなければ起動する",
                     );
                     ui.end_row();
+
+                    ui.label("タスクトレイ");
+                    ui.checkbox(&mut self.draft.tray, "閉じても終了せず、常駐する");
+                    ui.end_row();
                 });
             ui.label(
                 RichText::new("スクロールバック行数は新しいタブから適用されます")
                     .size(11.5)
                     .color(theme::TEXT_DIM),
             );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(format!("バージョン {}", env!("CARGO_PKG_VERSION")));
+                if ui
+                    .add_enabled(!self.checking_update, egui::Button::new("更新を確認"))
+                    .clicked()
+                {
+                    self.checking_update = true;
+                    self.update_message = Some("確認しています".to_owned());
+                    result = Some(SettingsResult::CheckUpdate);
+                }
+            });
+            if let Some(message) = &self.update_message {
+                ui.label(RichText::new(message).size(11.5).color(theme::TEXT_DIM));
+            }
             if let Some(e) = &self.error {
                 ui.label(RichText::new(e).color(theme::DANGER));
             }

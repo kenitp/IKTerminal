@@ -15,7 +15,7 @@ use crate::backend::sftp::SftpClient;
 use crate::backend::{serial, ssh};
 use crate::settings::Settings;
 use crate::sshconfig::SshConfig;
-use crate::terminal::{GridSize, Listener, Prompt, Shared, Status, TermHandle};
+use crate::terminal::{GridSize, Listener, Prompt, RemoteDir, Shared, Status, TermHandle};
 
 const INITIAL: GridSize = GridSize { cols: 80, rows: 24 };
 const DIRECTORY_REFRESH: Duration = Duration::from_millis(500);
@@ -206,6 +206,29 @@ impl Session {
 
     pub fn take_prompt(&self) -> Option<Prompt> {
         self.shared.take_prompt()
+    }
+
+    pub fn is_running_ssh(&self) -> bool {
+        matches!(self.kind, Kind::Ssh { .. }) && matches!(self.status(), Status::Running)
+    }
+
+    pub fn ssh_target(&self) -> Option<&str> {
+        match &self.kind {
+            Kind::Ssh { target, .. } => Some(target),
+            Kind::Local | Kind::Serial { .. } => None,
+        }
+    }
+
+    pub fn wants_cursor(&self, line: &str) -> bool {
+        self.is_running_ssh() && crate::cursor::command(line).is_some()
+    }
+
+    pub fn remote_dir(&self) -> RemoteDir {
+        self.shared.remote_dir()
+    }
+
+    pub fn update_remote(&self, f: impl FnOnce(&mut RemoteDir) -> bool) {
+        self.shared.update_remote(f);
     }
 
     pub fn write(&self, data: impl Into<Cow<'static, [u8]>>) {

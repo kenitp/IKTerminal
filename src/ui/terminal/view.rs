@@ -31,6 +31,10 @@ pub struct Output {
     pub zoom: f32,
     /// Shell line submitted with Enter, including the prompt.
     pub command_line: Option<String>,
+    /// Enter stays in the terminal. The app handles the line.
+    pub swallow_enter: bool,
+    /// The line above the command, used when the prompt prints the directory there.
+    pub line_above: Option<String>,
 }
 
 struct Grid {
@@ -86,6 +90,8 @@ pub fn show(ui: &mut Ui, session: &mut Session, font: &TermFont, want_focus: boo
     let mut out = Output {
         zoom: 0.0,
         command_line: None,
+        swallow_enter: false,
+        line_above: None,
     };
     let (events, modifiers, press_origin) =
         ui.input(|i| (i.events.clone(), i.modifiers, i.pointer.press_origin()));
@@ -117,19 +123,26 @@ pub fn show(ui: &mut Ui, session: &mut Session, font: &TermFont, want_focus: boo
                 ..
             } if focused => {
                 if *key == egui::Key::Enter && m.is_none() && !mode.contains(TermMode::ALT_SCREEN) {
-                    out.command_line = Some(submitted_line(&term));
+                    let line = submitted_line(&term);
+                    if session.wants_cursor(&line) {
+                        out.swallow_enter = true;
+                        out.line_above = line_above(&term);
+                    }
+                    out.command_line = Some(line);
                 }
                 let page = match key {
                     egui::Key::PageUp => Some(Scroll::PageUp),
                     egui::Key::PageDown => Some(Scroll::PageDown),
                     _ => None,
                 };
+                let swallow = out.swallow_enter && *key == egui::Key::Enter;
                 if let Some(scroll) =
                     page.filter(|_| m.shift && !m.ctrl && !mode.contains(TermMode::ALT_SCREEN))
                 {
                     term.scroll_display(scroll);
-                } else if let Some(bytes) =
-                    input::encode_key(*key, *m, mode.contains(TermMode::APP_CURSOR))
+                } else if !swallow
+                    && let Some(bytes) =
+                        input::encode_key(*key, *m, mode.contains(TermMode::APP_CURSOR))
                 {
                     send.extend(bytes);
                     typed = true;
@@ -332,16 +345,56 @@ pub fn show(ui: &mut Ui, session: &mut Session, font: &TermFont, want_focus: boo
     out
 }
 
+fn line_above(term: &alacritty_terminal::Term<crate::terminal::Listener>) -> Option<String> {
+    let grid = term.grid();
+    let bottom = grid.cursor.point.line.0;
+    let start = logical_start(term, bottom);
+    let above = start - 1;
+    if above < -(grid.history_size() as i32) {
+        return None;
+    }
+    let text = logical_text(term, above);
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
 /// The logical line at the cursor, joining rows the terminal wrapped.
 fn submitted_line(term: &alacritty_terminal::Term<crate::terminal::Listener>) -> String {
+    let bottom = term.grid().cursor.point.line.0;
+    logical_text(term, bottom).trim().to_owned()
+}
+
+fn logical_text(term: &alacritty_terminal::Term<crate::terminal::Listener>, bottom: i32) -> String {
     use alacritty_terminal::index::{Column, Line};
-    use alacritty_terminal::term::cell::Flags;
     let grid = term.grid();
     let cols = grid.columns();
     if cols == 0 {
         return String::new();
     }
-    let bottom = grid.cursor.point.line.0;
+    let start = logical_start(term, bottom);
+    let mut text = String::new();
+    for index in start..=bottom {
+        for col in 0..cols {
+            let cell = &grid[Line(index)][Column(col)];
+            if !cell
+                .flags
+                .contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER)
+            {
+                text.push(cell.c);
+            }
+        }
+    }
+    text
+}
+
+fn logical_start(term: &alacritty_terminal::Term<crate::terminal::Listener>, bottom: i32) -> i32 {
+    use alacritty_terminal::index::{Column, Line};
+    use alacritty_terminal::term::cell::Flags;
+    let grid = term.grid();
+    let cols = grid.columns();
+    if cols == 0 {
+        return bottom;
+    }
     let min = -(grid.history_size() as i32);
     let mut start = bottom;
     while start > min {
@@ -351,16 +404,7 @@ fn submitted_line(term: &alacritty_terminal::Term<crate::terminal::Listener>) ->
         }
         start -= 1;
     }
-    let mut text = String::new();
-    for index in start..=bottom {
-        for col in 0..cols {
-            let cell = &grid[Line(index)][Column(col)];
-            if !cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                text.push(cell.c);
-            }
-        }
-    }
-    text.trim().to_owned()
+    start
 }
 
 fn paint_scroll_indicator(

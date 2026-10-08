@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
 
 use egui::{
     Frame, Key, KeyboardShortcut, Margin, Modifiers, RichText, Ui, ViewportBuilder,
@@ -11,11 +12,13 @@ use egui::{
 };
 
 use crate::backend::local::{self, ShellSpec};
+use crate::cursor;
 use crate::instance::{self, Request};
 use crate::session::{Kind, Session};
 use crate::settings::Settings;
 use crate::sshconfig::{self, HostEntry, SshCommand, SshConfig};
 use crate::terminal::Status;
+use crate::tray::{self, Resident};
 use crate::ui::config_editor::{ConfigEditor, EditorResult};
 use crate::ui::fonts::{self, TermFont};
 use crate::ui::prompt_dialog::PromptDialog;
@@ -26,7 +29,17 @@ use crate::ui::sidebar::{Sidebar, SidebarAction};
 use crate::ui::ssh_save_dialog::{SshSaveDialog, SshSaveResult};
 use crate::ui::tabbar::{self, TabAction, TabInfo};
 use crate::ui::{chrome, terminal, theme};
-use crate::update::{self, StagedUpdate};
+use crate::update::{self, Check, StagedUpdate};
+
+#[derive(Clone)]
+struct PendingCursor {
+    session: u64,
+    desk: u64,
+    spec: String,
+    host: String,
+    hint: Option<String>,
+    until: Instant,
+}
 
 const NEW_TAB: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::CTRL.plus(Modifiers::SHIFT), Key::T);
@@ -104,7 +117,13 @@ pub struct App {
     update_rx: Receiver<StagedUpdate>,
     update: Option<StagedUpdate>,
     update_launched: bool,
+    update_check: Option<Receiver<Check>>,
     icon: Arc<egui::IconData>,
+    tray: Option<Resident>,
+    /// The window is hidden and the process stays in the notification area.
+    hidden: bool,
+    quitting: bool,
+    pending_cursor: Option<PendingCursor>,
 }
 
 impl App {
@@ -122,6 +141,7 @@ impl App {
         let update_rx = update::start(move || update_ctx.request_repaint());
         theme::apply(&cc.egui_ctx);
         fonts::install(&cc.egui_ctx, &settings);
+        tray::bind(&cc.egui_ctx);
         let ssh_config = SshConfig::load_default();
         let mut app = Self {
             hosts: ssh_config.hosts(),
@@ -141,15 +161,21 @@ impl App {
             update_rx,
             update: None,
             update_launched: false,
+            update_check: None,
             icon: Arc::new(egui::IconData {
                 rgba: include_bytes!("../assets/icon-64.rgba").to_vec(),
                 width: 64,
                 height: 64,
             }),
+            tray: None,
+            hidden: false,
+            quitting: false,
+            pending_cursor: None,
         };
         if let Some(shell) = app.default_shell() {
             app.open_shell(&cc.egui_ctx, 0, &shell);
         }
+        app.sync_tray(&cc.egui_ctx);
         app
     }
 
@@ -312,19 +338,65 @@ impl App {
             focus_id = Some(self.desks[index].id);
         }
         if let Some(id) = focus_id {
+            self.reveal(ctx);
             let viewport = viewport_id(id);
-            ctx.send_viewport_cmd_to(viewport, ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd_to(viewport, ViewportCommand::Focus);
         }
     }
 
     fn poll_update(&mut self) {
-        if self.update.is_some() {
-            return;
+        if self.update.is_none()
+            && let Ok(staged) = self.update_rx.try_recv()
+        {
+            self.arm_update(staged);
         }
-        if let Ok(staged) = self.update_rx.try_recv() {
+        let Some(rx) = &self.update_check else {
+            return;
+        };
+        let Ok(check) = rx.try_recv() else {
+            return;
+        };
+        self.update_check = None;
+        #[cfg(debug_assertions)]
+        let message = match check {
+            Check::Skipped => "デバッグビルドでは確認しません".to_owned(),
+        };
+        #[cfg(not(debug_assertions))]
+        let message = match check {
+            Check::UpToDate => match &self.update {
+                Some(update) => {
+                    format!(
+                        "IkTerminal {} があります。Ver.Up で更新します",
+                        update.version
+                    )
+                }
+                None => "最新です".to_owned(),
+            },
+            Check::Ready(staged) => {
+                let version = staged.version.clone();
+                self.arm_update(staged);
+                format!("IkTerminal {version} があります。Ver.Up で更新します")
+            }
+            Check::Failed => "確認できませんでした".to_owned(),
+        };
+        if let Some(dialog) = &mut self.settings_dialog {
+            dialog.finish_update_check(message);
+        }
+    }
+
+    fn arm_update(&mut self, staged: StagedUpdate) {
+        if self.update.is_none() {
             self.update = Some(staged);
         }
+        self.note_hidden_update();
+    }
+
+    fn request_update_check(&mut self, ctx: &egui::Context) {
+        if self.update_check.is_some() {
+            return;
+        }
+        let wake = ctx.clone();
+        self.update_check = Some(update::check_now(move || wake.request_repaint()));
     }
 
     fn show_update_banner(&mut self, ui: &mut Ui) {
@@ -364,10 +436,165 @@ impl App {
         }
     }
 
+    fn sync_tray(&mut self, ctx: &egui::Context) {
+        if self.settings.tray {
+            if self.tray.is_none() {
+                match tray::install(&self.icon.rgba, self.icon.width, self.icon.height) {
+                    Ok(resident) => self.tray = Some(resident),
+                    Err(error) => self.desks[0].notice = Some(error),
+                }
+            }
+        } else if self.tray.take().is_some() && self.hidden {
+            self.reveal(ctx);
+        }
+    }
+
+    fn poll_tray(&mut self, ctx: &egui::Context) {
+        if self.tray.is_none() {
+            return;
+        }
+        while let Some(event) = tray::poll() {
+            match event {
+                tray::Event::Show => self.reveal(ctx),
+                tray::Event::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
+                }
+            }
+        }
+    }
+
+    fn reveal(&mut self, ctx: &egui::Context) {
+        self.hidden = false;
+        for desk in &self.desks {
+            if desk.close {
+                continue;
+            }
+            let viewport = viewport_id(desk.id);
+            ctx.send_viewport_cmd_to(viewport, ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd_to(viewport, ViewportCommand::Minimized(false));
+        }
+        ctx.send_viewport_cmd_to(viewport_id(self.focused), ViewportCommand::Focus);
+    }
+
+    fn apply_visibility(&self, ctx: &egui::Context) {
+        if !self.hidden {
+            return;
+        }
+        for desk in &self.desks {
+            if desk.close {
+                continue;
+            }
+            ctx.send_viewport_cmd_to(viewport_id(desk.id), ViewportCommand::Visible(false));
+        }
+    }
+
+    fn note_remote_cd(&mut self, index: usize, line: &str) {
+        let Some(session) = self.desks[index]
+            .sessions
+            .get(self.desks[index].active)
+            .filter(|session| session.is_running_ssh())
+        else {
+            return;
+        };
+        session.update_remote(|dir| cursor::note_cd(line, dir));
+    }
+
+    fn open_cursor(&mut self, index: usize, line: &str, above: Option<&str>) {
+        let desk_id = self.desks[index].id;
+        let active = self.desks[index].active;
+        let Some(session) = self.desks[index].sessions.get(active) else {
+            return;
+        };
+        let Some(target) = session.ssh_target().map(str::to_owned) else {
+            return;
+        };
+        let session_id = session.id;
+        let title = session.title();
+        let dir = session.remote_dir();
+        let Some(spec) = cursor::command(line) else {
+            return;
+        };
+        let hint = cursor::directory_hint(line, above, &title);
+        let host = cursor::remote_authority(&self.ssh_config, &target);
+        let resolved = cursor::resolve(&spec, hint.as_deref(), &dir);
+        {
+            let session = &self.desks[index].sessions[active];
+            session.write(&b"\x15"[..]);
+            if resolved.is_err() {
+                session.write(cursor::REPORT_DIRS);
+            }
+        }
+        match resolved {
+            Ok(path) => {
+                if let Err(error) = cursor::launch(&host, &path) {
+                    self.desks[index].notice = Some(error);
+                }
+            }
+            Err(()) => {
+                self.pending_cursor = Some(PendingCursor {
+                    session: session_id,
+                    desk: desk_id,
+                    spec,
+                    host,
+                    hint,
+                    until: Instant::now() + Duration::from_secs(2),
+                });
+            }
+        }
+    }
+
+    fn poll_cursor(&mut self) {
+        let Some(pending) = self.pending_cursor.clone() else {
+            return;
+        };
+        if Instant::now() >= pending.until {
+            self.pending_cursor = None;
+            self.notice(pending.desk, "カレントフォルダを特定できません");
+            return;
+        }
+        let dir = {
+            let Some(session) = self.desks.iter().find_map(|desk| {
+                desk.sessions
+                    .iter()
+                    .find(|session| session.id == pending.session)
+            }) else {
+                self.pending_cursor = None;
+                return;
+            };
+            session.remote_dir()
+        };
+        let Ok(path) = cursor::resolve(&pending.spec, pending.hint.as_deref(), &dir) else {
+            return;
+        };
+        self.pending_cursor = None;
+        if let Err(error) = cursor::launch(&pending.host, &path) {
+            self.notice(pending.desk, &error);
+        }
+    }
+
+    fn notice(&mut self, desk: u64, message: &str) {
+        if let Some(desk) = self.desks.iter_mut().find(|item| item.id == desk) {
+            desk.notice = Some(message.to_owned());
+        }
+    }
+
     fn discard_update(&mut self) {
         if let Some(staged) = self.update.take() {
             let _ = std::fs::remove_file(staged.path);
         }
+        self.note_hidden_update();
+    }
+
+    fn note_hidden_update(&self) {
+        let Some(tray) = &self.tray else {
+            return;
+        };
+        let text = match &self.update {
+            Some(update) if self.hidden => format!("IkTerminal {} があります", update.version),
+            _ => "IkTerminal".to_owned(),
+        };
+        tray.set_tooltip(&text);
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context, index: usize) {
@@ -642,7 +869,13 @@ impl App {
                 self.desks[index].focus_terminal = false;
             }
             if let Some(line) = out.command_line {
-                self.note_ssh_command(index, &line);
+                if out.swallow_enter {
+                    let above = out.line_above.clone();
+                    self.open_cursor(index, &line, above.as_deref());
+                } else {
+                    self.note_remote_cd(index, &line);
+                    self.note_ssh_command(index, &line);
+                }
             }
             if out.zoom != 0.0 {
                 let range = Settings::FONT_SIZE_RANGE;
@@ -735,6 +968,7 @@ impl App {
                         fonts::install(ctx, &new);
                     }
                     self.settings = new;
+                    self.sync_tray(ctx);
                     self.settings_dialog = None;
                     self.desks[index].focus_terminal = true;
                 }
@@ -742,6 +976,7 @@ impl App {
                     self.settings_dialog = None;
                     self.desks[index].focus_terminal = true;
                 }
+                Some(SettingsResult::CheckUpdate) => self.request_update_check(ctx),
                 None => {}
             }
         }
@@ -811,8 +1046,20 @@ impl App {
             return;
         }
         if index == 0 {
+            self.poll_tray(&ctx);
+            self.poll_cursor();
             self.poll_launches(&ctx);
             self.poll_update();
+            if ui.input(|i| i.viewport().close_requested())
+                && self.settings.tray
+                && self.tray.is_some()
+                && !self.quitting
+                && !self.update_launched
+            {
+                self.hidden = true;
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+                self.note_hidden_update();
+            }
         }
         if self.desks.get(index).is_some_and(|desk| desk.close) {
             ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -863,7 +1110,8 @@ impl App {
             .with_min_inner_size([480.0, 300.0])
             .with_decorations(false)
             .with_drag_and_drop(true)
-            .with_icon(Arc::clone(&self.icon));
+            .with_icon(Arc::clone(&self.icon))
+            .with_visible(!self.hidden);
         if let Some(spawn) = spawn {
             builder = builder.with_inner_size(spawn.size).with_active(true);
             if let Some(pos) = spawn.pos {
@@ -880,6 +1128,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.desk_ui(ui, 0);
         self.present_children(&ctx);
+        self.apply_visibility(&ctx);
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

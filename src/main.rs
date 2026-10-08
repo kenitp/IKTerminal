@@ -2,6 +2,7 @@
 
 mod app;
 mod backend;
+mod cursor;
 mod frame;
 mod instance;
 mod launch;
@@ -9,6 +10,7 @@ mod session;
 mod settings;
 mod sshconfig;
 mod terminal;
+mod tray;
 mod ui;
 mod update;
 

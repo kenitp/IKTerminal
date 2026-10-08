@@ -15,6 +15,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 use crate::sshconfig::HostConfig;
+use crate::terminal::osc::{OscDir, OscSniffer};
 use crate::terminal::{PtyIo, Shared, Status, TermHandle};
 use handler::Client;
 
@@ -152,10 +153,44 @@ async fn connect(
         chain.push(handle);
     }
     let handle = chain.pop().expect("target handle");
-    Ok(Connection {
+    let connection = Connection {
         handle,
         _jumps: chain,
-    })
+    };
+    read_login_dirs(&connection.handle, shared).await;
+    Ok(connection)
+}
+
+async fn read_login_dirs(handle: &Handle<Client>, shared: &Shared) {
+    let Ok(mut channel) = handle.channel_open_session().await else {
+        return;
+    };
+    if channel
+        .exec(true, r#"printf '%s\n%s\n' "$HOME" "$PWD""#)
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let mut buf = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, channel.wait()).await {
+            Ok(Some(ChannelMsg::Data { data })) => buf.extend_from_slice(&data),
+            Ok(Some(ChannelMsg::ExitStatus { .. } | ChannelMsg::Eof | ChannelMsg::Close))
+            | Ok(None) => break,
+            Ok(Some(_)) => {}
+            Err(_) => break,
+        }
+    }
+    let _ = channel.close().await;
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    shared.set_login_dir(lines.next(), lines.next());
 }
 
 async fn run_shell(
@@ -182,11 +217,18 @@ async fn run_shell(
     shared.set_status(Status::Running);
 
     let mut parser: Processor = Processor::new();
+    let mut osc = OscSniffer::new();
     loop {
         let sync_deadline = parser.sync_timeout().sync_timeout();
         tokio::select! {
             msg = reader.wait() => match msg {
                 Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    for report in osc.push(&data) {
+                        match report {
+                            OscDir::Cwd(path) => shared.set_remote_cwd(&path),
+                            OscDir::Home(path) => shared.set_remote_home(&path),
+                        }
+                    }
                     parser.advance(&mut *term.lock(), &data);
                     shared.repaint();
                 }
