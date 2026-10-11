@@ -31,7 +31,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ matrix.target }}
+          shared-key: ${{ matrix.target }}${{ inputs.package && '-release' || '' }}
           cache-all-crates: true
 
       - name: Cache apt packages

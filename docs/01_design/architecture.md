@@ -178,5 +178,5 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
   - Pages は `gh-pages` ブランチから配信する。URL は `https://kenitp.github.io/IKTerminal`。
 - GitHub Actions
   - `Build` は push と pull request で clippy とテストだけ行う (配布物は作らない)。`concurrency` で同 ref の途中実行を打ち切る。
-  - `Release` は配布が必要なときだけ `package.yml` でインストーラ / `.deb` / `.tar.gz` を作る。Rust は `Swatinem/rust-cache`、Linux の apt 依存と Windows の Inno Setup もキャッシュする。
+  - `Release` は配布が必要なときだけ `package.yml` でインストーラ / `.deb` / `.tar.gz` を作る。Rust は `Swatinem/rust-cache`、Linux の apt 依存と Windows の Inno Setup もキャッシュする。Rust のキャッシュは `Build` 用と `Release` 用で分け、`Release` では依存クレートのリリースビルドを再利用する。
   - `Release` は `main` への push で動く。`version` が push 前のコミットと異なり、`v<version>` タグが無いとき GitHub Release に載せる。失敗した実行の再実行と、手動実行は、タグが無いときに Release を作る。続けて `apt` ジョブが `.deb` を `gh-pages` の apt リポジトリへ取り込む。
