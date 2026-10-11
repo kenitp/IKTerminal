@@ -34,8 +34,23 @@ Linux パッケージ (`dpkg-dev` が必要):
 # target/dist/IkTerminal-<version>-linux-<arch>.tar.gz
 ```
 
+ローカル `.deb`:
+
 ```sh
 sudo apt install ./IkTerminal-<version>-linux-x86_64.deb
+```
+
+GitHub Pages の apt リポジトリ (Release 後に更新):
+
+```sh
+curl -fsSL https://kenitp.github.io/IKTerminal/ikterminal.gpg \
+  | sudo tee /etc/apt/keyrings/ikterminal.gpg >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/ikterminal.gpg] https://kenitp.github.io/IKTerminal stable main" \
+  | sudo tee /etc/apt/sources.list.d/ikterminal.list
+sudo apt update
+sudo apt install ikterminal
+# 以降
+sudo apt update && sudo apt upgrade
 ```
 
 インストール後はアプリメニューに登録され、`ikt` / `ikterminal` が使える。デフォルト端末にするときは `sudo update-alternatives --config x-terminal-emulator`。xdg-terminal-exec 利用時は `~/.config/xdg-terminals.list` に `ikterminal.desktop` を書く。

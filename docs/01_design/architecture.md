@@ -157,6 +157,10 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
   3. `packaging/linux/` の desktop / maintainer scripts と `assets/icon-*.png` から `.deb` を組み立て、`target/dist/IkTerminal-<version>-linux-<arch>.deb` を出力する。`dpkg-deb` が必要。
   4. 実行時は libxcb、libxkbcommon、libxkbcommon-x11、OpenGL を動的に読む。
 - 起動引数は `launch.rs` が `Launch { directory, execute }` にまとめる。`-e` は初期ローカルタブの `ShellSpec` になる。単一インスタンス転送はディレクトリ指定のみ。`-e` は既存インスタンスがいても別ウィンドウにする。
+- apt リポジトリ (GitHub Pages)
+  - 公開鍵は `packaging/linux/apt/ikterminal.gpg`。秘密鍵はリポジトリに入れず、GitHub secret `APT_GPG_PRIVATE_KEY` に置く。鍵の作成は `scripts/generate-apt-key.sh`。
+  - `scripts/apt-repo.sh` が `pool/` / `dists/stable/` と署名 (`InRelease` / `Release.gpg`) を組み立てる。
+  - Pages は `gh-pages` ブランチから配信する。URL は `https://kenitp.github.io/IKTerminal`。
 - GitHub Actions
   - `Build` は push と pull request で `.github/workflows/package.yml` を呼ぶ。Windows と Linux で clippy、テスト、配布物 (Windows インストーラ、Linux `.deb` / `.tar.gz`) の生成を行う。
-  - `Release` は `main` への push で動く。`version` が push 前のコミットと異なり、`v<version>` タグが無いとき、同じ package ワークフローの成果物を GitHub Release に載せる。失敗した実行の再実行と、手動実行は、タグが無いときに Release を作る。
+  - `Release` は `main` への push で動く。`version` が push 前のコミットと異なり、`v<version>` タグが無いとき、同じ package ワークフローの成果物を GitHub Release に載せる。失敗した実行の再実行と、手動実行は、タグが無いときに Release を作る。続けて `apt` ジョブが `.deb` を `gh-pages` の apt リポジトリへ取り込む。

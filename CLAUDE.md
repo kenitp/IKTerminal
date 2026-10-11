@@ -9,6 +9,8 @@ Rust 製の軽量ターミナル。仕様は `docs/00_spec/`、設計は `docs/0
 - テスト: `cargo test`
 - インストーラ: `.\scripts\build-installer.ps1`
 - Linux パッケージ: `./scripts/package-linux.sh` (`.deb` と `.tar.gz`。`dpkg-dev` が必要)
+- apt 署名鍵: `./scripts/generate-apt-key.sh` (公開鍵を commit、秘密鍵は `APT_GPG_PRIVATE_KEY`)
+- apt リポジトリ組み立て: `./scripts/apt-repo.sh <site-dir> [extra.deb ...]`
 
 ## ルール
 

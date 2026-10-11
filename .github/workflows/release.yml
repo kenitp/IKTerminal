@@ -73,3 +73,61 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: dist/*
+
+  apt:
+    needs: [prepare, publish]
+    if: needs.prepare.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Install apt tools
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev gnupg
+
+      - name: Import signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          set -eu
+          if [ -z "${APT_GPG_PRIVATE_KEY:-}" ]; then
+            echo "GitHub secret APT_GPG_PRIVATE_KEY is not set." >&2
+            echo "Run scripts/generate-apt-key.sh and:" >&2
+            echo "  gh secret set APT_GPG_PRIVATE_KEY < packaging/linux/apt/ikterminal-private.asc" >&2
+            exit 1
+          fi
+          umask 077
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -p "$GNUPGHOME"
+          printf '%s\n' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+
+      - name: Build apt repository
+        run: |
+          set -eu
+          mkdir -p apt-site
+          if git fetch origin gh-pages:gh-pages 2>/dev/null; then
+            git archive gh-pages | tar -x -C apt-site
+          fi
+          rm -rf apt-site/dists apt-site/index.html
+          # Keep previous pool; add/replace debs from this release.
+          deb=$(find dist -name '*.deb' -type f | head -n 1)
+          if [ -z "$deb" ]; then
+            echo "no .deb artifact found" >&2
+            exit 1
+          fi
+          sh scripts/apt-repo.sh apt-site "$deb"
+
+      - name: Publish gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./apt-site
+          force_orphan: false

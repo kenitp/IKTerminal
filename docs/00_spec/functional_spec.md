@@ -150,13 +150,14 @@ OS のタイトルバーは出さない。タブバーの空きをドラッグ�
 - Linux
   - Ubuntu / Debian 向けに `IkTerminal-<version>-linux-<arch>.deb` を配布する。`sudo apt install ./....deb` で入れる。
   - `.deb` は `/usr/bin/ikterminal` と symlink `ikt`、アプリメニュー用 `.desktop`、xdg-terminal-exec 用エントリ、アイコンを置き、`update-alternatives` で `x-terminal-emulator` に登録する。
+  - 同じリポジトリの GitHub Pages (`https://kenitp.github.io/IKTerminal`) に GPG 署名付き apt リポジトリを公開する。利用者は sources を追加したあと `apt update` / `apt upgrade` で更新できる。
   - アプリ内 Ver.Up 用に、同じバイナリの `IkTerminal-<version>-linux-<arch>.tar.gz` も配布する。
   - 実行時に libxcb、libxkbcommon、libxkbcommon-x11、OpenGL が必要 (パッケージ依存として宣言する)。
   - クリップボードは X11 と Wayland。ファイル選択は xdg-desktop-portal。
   - 日本語表示には Noto Sans CJK などのシステムフォントを使う。
 - CI
   - push と pull request で Windows と Linux を検査し、上記の配布物を作る。
-  - `main` へ push したとき、`version` が直前の `main` と異なり、タグ `v<version>` が無ければそのタグと GitHub Release を作る。同じコミットの再実行、または手動実行でも、タグが無ければ Release を作る。
+  - `main` へ push したとき、`version` が直前の `main` と異なり、タグ `v<version>` が無ければそのタグと GitHub Release を作る。同じコミットの再実行、または手動実行でも、タグが無ければ Release を作る。Release 後、`.deb` を `gh-pages` の apt リポジトリへ取り込む。
 
 リリースビルドは起動後に GitHub の最新リリースを確認する。設定の「更新を確認」でも同じ確認をすぐ行う。実行中より新しいバージョンで、対象の配布物の SHA-256 が Release の `digest` と一致するとき、画面に `Ver.Up` を出す。押すと更新して終了する。「今はしない」を選ぶとその起動では更新しない。終了しただけでは更新しない。設定では、最新なら「最新です」、新しい版なら「Ver.Up で更新します」、確認できないときは「確認できませんでした」と出す。ウィンドウを隠しているときは、タスクトレイのツールチップにも新しいバージョンを出す。
 
