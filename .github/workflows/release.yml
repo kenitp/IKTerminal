@@ -53,6 +53,8 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.release == 'true'
     uses: ./.github/workflows/package.yml
+    with:
+      package: true
 
   publish:
     needs: [prepare, build]
@@ -89,8 +91,10 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Install apt tools
-        run: sudo apt-get update && sudo apt-get install -y dpkg-dev gnupg
+      - uses: awalsh128/cache-apt-pkgs-action@v1.5.3
+        with:
+          packages: dpkg-dev gnupg
+          version: apt-publish-1
 
       - name: Import signing key
         env:

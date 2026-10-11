@@ -2,6 +2,11 @@ name: Package
 
 on:
   workflow_call:
+    inputs:
+      package:
+        description: Build installers and upload artifacts
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -25,31 +30,47 @@ jobs:
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.target }}
+          cache-all-crates: true
 
-      - name: Install Linux packages
+      - name: Cache apt packages
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libxcb1-dev libxkbcommon-dev libwayland-dev dpkg-dev
+        uses: awalsh128/cache-apt-pkgs-action@v1.5.3
+        with:
+          packages: pkg-config libxcb1-dev libxkbcommon-dev libwayland-dev dpkg-dev
+          version: linux-deps-1
+
+      - name: Cache Inno Setup
+        if: runner.os == 'Windows' && inputs.package
+        id: innosetup
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\Program Files (x86)\Inno Setup 6
+            C:\Program Files\Inno Setup 6
+          key: innosetup-6
 
       - name: Install Inno Setup
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.package && steps.innosetup.outputs.cache-hit != 'true'
         run: choco install innosetup -y --no-progress
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test
+        run: cargo test --all-targets
 
       - name: Package Linux
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && inputs.package
         run: sh scripts/package-linux.sh
 
       - name: Package Windows
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.package
         run: .\scripts\build-installer.ps1
 
       - name: Upload Linux packages
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && inputs.package
         uses: actions/upload-artifact@v7
         with:
           name: dist-linux
@@ -57,7 +78,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload Windows installer
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.package
         uses: actions/upload-artifact@v7
         with:
           name: dist-windows

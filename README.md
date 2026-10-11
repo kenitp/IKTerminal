@@ -43,8 +43,9 @@ sudo apt install ./IkTerminal-<version>-linux-x86_64.deb
 GitHub Pages の apt リポジトリ (Release 後に更新):
 
 ```sh
-curl -fsSL https://kenitp.github.io/IKTerminal/ikterminal.gpg \
-  | sudo tee /etc/apt/keyrings/ikterminal.gpg >/dev/null
+sudo mkdir -p /etc/apt/keyrings
+sudo curl -fsSL -o /etc/apt/keyrings/ikterminal.gpg \
+  https://kenitp.github.io/IKTerminal/ikterminal.gpg
 echo "deb [signed-by=/etc/apt/keyrings/ikterminal.gpg] https://kenitp.github.io/IKTerminal stable main" \
   | sudo tee /etc/apt/sources.list.d/ikterminal.list
 sudo apt update

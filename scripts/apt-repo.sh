@@ -126,8 +126,9 @@ cat >"$site/index.html" <<'EOF'
 <body>
   <h1>IkTerminal apt repository</h1>
   <pre>
-curl -fsSL https://kenitp.github.io/IKTerminal/ikterminal.gpg \
-  | sudo tee /etc/apt/keyrings/ikterminal.gpg >/dev/null
+sudo mkdir -p /etc/apt/keyrings
+sudo curl -fsSL -o /etc/apt/keyrings/ikterminal.gpg \
+  https://kenitp.github.io/IKTerminal/ikterminal.gpg
 echo "deb [signed-by=/etc/apt/keyrings/ikterminal.gpg] https://kenitp.github.io/IKTerminal stable main" \
   | sudo tee /etc/apt/sources.list.d/ikterminal.list
 sudo apt update

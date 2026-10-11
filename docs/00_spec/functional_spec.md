@@ -156,7 +156,7 @@ OS のタイトルバーは出さない。タブバーの空きをドラッグ�
   - クリップボードは X11 と Wayland。ファイル選択は xdg-desktop-portal。
   - 日本語表示には Noto Sans CJK などのシステムフォントを使う。
 - CI
-  - push と pull request で Windows と Linux を検査し、上記の配布物を作る。
+  - push と pull request で Windows と Linux の clippy / テストを行う。配布物の生成は Release 時だけ行う。
   - `main` へ push したとき、`version` が直前の `main` と異なり、タグ `v<version>` が無ければそのタグと GitHub Release を作る。同じコミットの再実行、または手動実行でも、タグが無ければ Release を作る。Release 後、`.deb` を `gh-pages` の apt リポジトリへ取り込む。
 
 リリースビルドは起動後に GitHub の最新リリースを確認する。設定の「更新を確認」でも同じ確認をすぐ行う。実行中より新しいバージョンで、対象の配布物の SHA-256 が Release の `digest` と一致するとき、画面に `Ver.Up` を出す。押すと更新して終了する。「今はしない」を選ぶとその起動では更新しない。終了しただけでは更新しない。設定では、最新なら「最新です」、新しい版なら「Ver.Up で更新します」、確認できないときは「確認できませんでした」と出す。ウィンドウを隠しているときは、タスクトレイのツールチップにも新しいバージョンを出す。
