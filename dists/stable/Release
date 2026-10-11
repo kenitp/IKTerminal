@@ -1,0 +1,16 @@
+Origin: IkTerminal
+Label: IkTerminal
+Suite: stable
+Codename: stable
+Architectures: amd64
+Components: main
+Description: IkTerminal apt repository
+Date: Sun, 11 Oct 2026 11:20:18 +0000
+MD5Sum:
+ effe73efccb996b10beabeb20bd24391      564 main/binary-amd64/Packages
+ e7cd4323e6208e31578227e4152fddf6      408 main/binary-amd64/Packages.gz
+ 19726b6a0706e77ffd0ed8cec58c66b3       89 main/binary-amd64/Release
+SHA256:
+ 5e28e2c0efaedacaaf45bbc66f45af1670e4543628b3569a28cb7285f74f132e      564 main/binary-amd64/Packages
+ ec1b3700d8e62b966f01a33757ed3bbd055654d37921b1dafec9662a62c05710      408 main/binary-amd64/Packages.gz
+ f57912a7f0c45bf654e62f2e384c7e6b5888c1edf7cbb8777df1e243da32106a       89 main/binary-amd64/Release

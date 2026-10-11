@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>IkTerminal apt</title>
+</head>
+<body>
+  <h1>IkTerminal apt repository</h1>
+  <pre>
+curl -fsSL https://kenitp.github.io/IKTerminal/ikterminal.gpg \
+  | sudo tee /etc/apt/keyrings/ikterminal.gpg >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/ikterminal.gpg] https://kenitp.github.io/IKTerminal stable main" \
+  | sudo tee /etc/apt/sources.list.d/ikterminal.list
+sudo apt update
+sudo apt install ikterminal
+  </pre>
+</body>
+</html>
