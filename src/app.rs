@@ -11,12 +11,13 @@ use egui::{
     ViewportCommand, ViewportId,
 };
 
+use crate::backend::lan::{Device, Scanner};
 use crate::backend::local::{self, ShellSpec};
 use crate::cursor;
 use crate::instance::{self, Request};
 use crate::session::{Kind, Session};
 use crate::settings::Settings;
-use crate::sshconfig::{self, HostEntry, SshCommand, SshConfig};
+use crate::sshconfig::{self, HostDraft, HostEntry, SshCommand, SshConfig};
 use crate::terminal::Status;
 use crate::tray::{self, Resident};
 use crate::ui::config_editor::{ConfigEditor, EditorResult};
@@ -25,7 +26,8 @@ use crate::ui::prompt_dialog::PromptDialog;
 use crate::ui::serial_dialog::{SerialDialog, SerialResult};
 use crate::ui::settings_dialog::{SettingsDialog, SettingsResult};
 use crate::ui::sftp_panel::SftpView;
-use crate::ui::sidebar::{Sidebar, SidebarAction};
+use crate::ui::sidebar::{Lan, Sidebar, SidebarAction};
+use crate::ui::ssh_login_dialog::{LoginResult, SshLoginDialog};
 use crate::ui::ssh_save_dialog::{SshSaveDialog, SshSaveResult};
 use crate::ui::tabbar::{self, TabAction, TabInfo};
 use crate::ui::{chrome, terminal, theme};
@@ -41,10 +43,16 @@ struct PendingCursor {
     until: Instant,
 }
 
+/// A host from the LAN scan, written to the SSH config once its session is running.
+struct PendingSave {
+    session: u64,
+    desk: u64,
+    draft: HostDraft,
+}
+
 const NEW_TAB: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::CTRL.plus(Modifiers::SHIFT), Key::T);
-const CLOSE_TAB: KeyboardShortcut =
-    KeyboardShortcut::new(Modifiers::CTRL.plus(Modifiers::SHIFT), Key::W);
+const CLOSE_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::W);
 const PREV_TAB: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::CTRL.plus(Modifiers::SHIFT), Key::Tab);
 const NEXT_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::Tab);
@@ -65,6 +73,7 @@ struct Desk {
     serial_dialog: Option<SerialDialog>,
     prompt: PromptDialog,
     ssh_save: Option<SshSaveDialog>,
+    login: Option<SshLoginDialog>,
     notice: Option<String>,
     focus_terminal: bool,
     new_tab_menu: bool,
@@ -88,6 +97,7 @@ impl Desk {
             serial_dialog: None,
             prompt: PromptDialog::default(),
             ssh_save: None,
+            login: None,
             notice,
             focus_terminal: true,
             new_tab_menu: false,
@@ -124,6 +134,8 @@ pub struct App {
     hidden: bool,
     quitting: bool,
     pending_cursor: Option<PendingCursor>,
+    lan: Scanner,
+    pending_saves: Vec<PendingSave>,
 }
 
 impl App {
@@ -169,6 +181,8 @@ impl App {
             hidden: false,
             quitting: false,
             pending_cursor: None,
+            lan: Scanner::default(),
+            pending_saves: Vec::new(),
         };
         let shell = execute.or_else(|| app.default_shell());
         if let Some(shell) = shell {
@@ -220,8 +234,86 @@ impl App {
 
     fn connect(&mut self, ctx: &egui::Context, index: usize, target: &str) {
         let id = self.next_session();
-        let session = Session::ssh(ctx, &self.settings, id, &self.ssh_config, target);
+        let session = Session::ssh(ctx, &self.settings, id, &self.ssh_config, target, None);
         self.push_session(index, session);
+    }
+
+    fn start_scan(&mut self, ctx: &egui::Context) {
+        if self.lan.scanning() {
+            return;
+        }
+        let wake = ctx.clone();
+        self.lan
+            .start(self.settings.scan_port, move || wake.request_repaint());
+    }
+
+    fn poll_lan(&mut self) {
+        if self.lan.scanning() {
+            let config = &self.ssh_config;
+            self.lan.poll(|device| !is_configured(config, device));
+        }
+    }
+
+    /// Opens a session to a scanned device; the host is saved after it connects.
+    fn connect_device(
+        &mut self,
+        ctx: &egui::Context,
+        index: usize,
+        draft: HostDraft,
+        password: String,
+    ) -> Result<(), String> {
+        draft.validate()?;
+        if draft.user.is_empty() {
+            return Err("ユーザーを入力してください".to_owned());
+        }
+        if self
+            .hosts
+            .iter()
+            .any(|host| host.alias.eq_ignore_ascii_case(&draft.alias))
+        {
+            return Err(format!("{} は既に config にあります", draft.alias));
+        }
+        let target = format!("{}@{}:{}", draft.user, draft.hostname, draft.port);
+        let password = (!password.is_empty()).then_some(password);
+        let id = self.next_session();
+        let session = Session::ssh(ctx, &self.settings, id, &self.ssh_config, &target, password);
+        self.push_session(index, session);
+        self.pending_saves.push(PendingSave {
+            session: id,
+            desk: self.desks[index].id,
+            draft,
+        });
+        Ok(())
+    }
+
+    fn poll_saves(&mut self) {
+        if self.pending_saves.is_empty() {
+            return;
+        }
+        let desks = &self.desks;
+        self.pending_saves.retain(|pending| {
+            matches!(
+                session_status(desks, pending.session),
+                Some(Status::Connecting | Status::Running)
+            )
+        });
+        let ready: Vec<PendingSave> = self
+            .pending_saves
+            .extract_if(.., |pending| {
+                session_status(desks, pending.session) == Some(Status::Running)
+            })
+            .collect();
+        if ready.is_empty() {
+            return;
+        }
+        for pending in ready {
+            let message = match sshconfig::save_host(&pending.draft) {
+                Ok(()) => format!("{} を SSH config に追加しました", pending.draft.alias),
+                Err(error) => format!("SSH config に追加できません: {error}"),
+            };
+            self.notice(pending.desk, &message);
+        }
+        self.reload_config();
     }
 
     fn reconnect(&mut self, ctx: &egui::Context, index: usize, tab: usize) {
@@ -232,7 +324,7 @@ impl App {
         let id = self.next_session();
         let old = std::mem::replace(
             &mut self.desks[index].sessions[tab],
-            Session::ssh(ctx, &self.settings, id, &self.ssh_config, &target),
+            Session::ssh(ctx, &self.settings, id, &self.ssh_config, &target, None),
         );
         self.desks[index].sftp_views.remove(&old.id);
         self.desks[index].focus_terminal = true;
@@ -302,6 +394,8 @@ impl App {
     fn reload_config(&mut self) {
         self.ssh_config = SshConfig::load_default();
         self.hosts = self.ssh_config.hosts();
+        let config = &self.ssh_config;
+        self.lan.retain(|device| !is_configured(config, device));
     }
 
     fn open_editor(&mut self, index: usize, focus: Option<&str>) {
@@ -599,9 +693,14 @@ impl App {
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context, index: usize) {
         let (new_tab, close_tab, prev, next) = ctx.input_mut(|i| {
+            let close_tab = i.consume_shortcut(&CLOSE_TAB);
+            if close_tab {
+                i.events
+                    .retain(|event| !matches!(event, egui::Event::Text(text) if text == "\u{17}"));
+            }
             (
                 i.consume_shortcut(&NEW_TAB),
-                i.consume_shortcut(&CLOSE_TAB),
+                close_tab,
                 i.consume_shortcut(&PREV_TAB),
                 i.consume_shortcut(&NEXT_TAB),
             )
@@ -773,9 +872,13 @@ impl App {
             .size_range(180.0..=420.0)
             .frame(frame)
             .show(ui, |ui| {
+                let lan = Lan {
+                    scanner: &self.lan,
+                    port: self.settings.scan_port,
+                };
                 match self.desks[index]
                     .sidebar
-                    .show(ui, &self.shells, &self.hosts)
+                    .show(ui, &self.shells, &self.hosts, lan)
                 {
                     Some(SidebarAction::OpenShell(shell)) => self.open_shell(&ctx, index, &shell),
                     Some(SidebarAction::Connect(target)) => self.connect(&ctx, index, &target),
@@ -783,6 +886,10 @@ impl App {
                         self.open_editor(index, focus.as_deref())
                     }
                     Some(SidebarAction::Reload) => self.reload_config(),
+                    Some(SidebarAction::Scan) => self.start_scan(&ctx),
+                    Some(SidebarAction::PickDevice(device)) => {
+                        self.desks[index].login = Some(SshLoginDialog::new(&device));
+                    }
                     None => {}
                 }
             });
@@ -919,6 +1026,7 @@ impl App {
     fn dialogs_open(&self, index: usize) -> bool {
         let id = self.desks[index].id;
         self.desks[index].ssh_save.is_some()
+            || self.desks[index].login.is_some()
             || self.desks[index].serial_dialog.is_some()
             || (self.editor.is_some() && self.editor_desk == id)
             || (self.settings_dialog.is_some() && self.settings_desk == id)
@@ -928,6 +1036,7 @@ impl App {
         let desk = &mut self.desks[index];
         desk.prompt.show(ctx, &desk.sessions);
         self.ssh_save_dialog(ctx, index);
+        self.login_dialog(ctx, index);
         if self.editor.is_some()
             && self.editor_desk == self.desks[index].id
             && let Some(editor) = &mut self.editor
@@ -1041,6 +1150,29 @@ impl App {
         }
     }
 
+    fn login_dialog(&mut self, ctx: &egui::Context, index: usize) {
+        let Some(dialog) = &mut self.desks[index].login else {
+            return;
+        };
+        match dialog.show(ctx) {
+            Some(LoginResult::Connect { draft, password }) => {
+                match self.connect_device(ctx, index, draft, password) {
+                    Ok(()) => self.desks[index].login = None,
+                    Err(error) => {
+                        if let Some(dialog) = &mut self.desks[index].login {
+                            dialog.set_error(error);
+                        }
+                    }
+                }
+            }
+            Some(LoginResult::Closed) => {
+                self.desks[index].login = None;
+                self.desks[index].focus_terminal = true;
+            }
+            None => {}
+        }
+    }
+
     fn desk_ui(&mut self, ui: &mut Ui, index: usize) {
         if index >= self.desks.len() {
             return;
@@ -1058,6 +1190,8 @@ impl App {
             self.poll_cursor();
             self.poll_launches(&ctx);
             self.poll_update();
+            self.poll_lan();
+            self.poll_saves();
             if ui.input(|i| i.viewport().close_requested())
                 && self.settings.tray
                 && self.tray.is_some()
@@ -1154,6 +1288,22 @@ fn viewport_id(desk_id: u64) -> ViewportId {
 
 fn panel_id(ui: &Ui, name: &str) -> egui::Id {
     egui::Id::new((name, ui.ctx().viewport_id()))
+}
+
+fn session_status(desks: &[Desk], id: u64) -> Option<Status> {
+    desks
+        .iter()
+        .flat_map(|desk| &desk.sessions)
+        .find(|session| session.id == id)
+        .map(Session::status)
+}
+
+fn is_configured(config: &SshConfig, device: &Device) -> bool {
+    config.contains_target(&device.addr.to_string(), None, device.port)
+        || device
+            .name
+            .as_deref()
+            .is_some_and(|name| config.contains_target(name, None, device.port))
 }
 
 fn take_session(desk: &mut Desk, tab: usize) -> Option<Session> {

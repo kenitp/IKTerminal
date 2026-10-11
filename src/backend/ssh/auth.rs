@@ -1,4 +1,4 @@
-//! User authentication: agent, identity files, keyboard-interactive, password.
+//! User authentication: a given password, agent, identity files, keyboard-interactive, password.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,8 +19,18 @@ pub async fn authenticate(
     handle: &mut Handle<Client>,
     shared: &Shared,
     host: &HostConfig,
+    password: Option<String>,
 ) -> Result<(), String> {
     let user = host.user.as_str();
+    if let Some(password) = password
+        && handle
+            .authenticate_password(user, password)
+            .await
+            .map_err(|e| e.to_string())?
+            .success()
+    {
+        return Ok(());
+    }
     let rsa_hash = handle
         .best_supported_rsa_hash()
         .await

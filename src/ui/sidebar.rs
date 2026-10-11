@@ -1,9 +1,10 @@
-//! Left panel: local shells, quick connect and SSH hosts from the config.
+//! Left panel: local shells, quick connect, SSH hosts from the config and the LAN scan.
 
 use egui::Ui;
 
 use super::theme;
 use super::widgets::{flat_button, list_row, section_header};
+use crate::backend::lan::{Device, Scanner};
 use crate::backend::local::ShellSpec;
 use crate::sshconfig::HostEntry;
 
@@ -12,6 +13,13 @@ pub enum SidebarAction {
     Connect(String),
     EditConfig(Option<String>),
     Reload,
+    Scan,
+    PickDevice(Device),
+}
+
+pub struct Lan<'a> {
+    pub scanner: &'a Scanner,
+    pub port: u16,
 }
 
 #[derive(Default)]
@@ -26,6 +34,7 @@ impl Sidebar {
         ui: &mut Ui,
         shells: &[ShellSpec],
         hosts: &[HostEntry],
+        lan: Lan,
     ) -> Option<SidebarAction> {
         let mut action = None;
 
@@ -102,7 +111,50 @@ impl Sidebar {
                 if empty {
                     ui.label(egui::RichText::new("ホストがありません").color(theme::TEXT_DIM));
                 }
+                if let Some(picked) = lan_section(ui, &lan, &filter) {
+                    action = Some(picked);
+                }
             });
         action
     }
+}
+
+fn lan_section(ui: &mut Ui, lan: &Lan, filter: &str) -> Option<SidebarAction> {
+    let mut action = None;
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        section_header(ui, &format!("LAN (ポート {})", lan.port));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if lan.scanner.scanning() {
+                ui.spinner();
+            } else if flat_button(ui, "スキャン")
+                .on_hover_text("同じネットワークでポートが開いている機器を探す")
+                .clicked()
+            {
+                action = Some(SidebarAction::Scan);
+            }
+        });
+    });
+    for device in &lan.scanner.devices {
+        let label = device.label();
+        let detail = if device.name.is_some() {
+            format!("{}:{}", device.addr, device.port)
+        } else {
+            format!("ポート {}", device.port)
+        };
+        if !filter.is_empty() && !label.to_lowercase().contains(filter) && !detail.contains(filter)
+        {
+            continue;
+        }
+        if list_row(ui, theme::WARNING, &label, &detail, false)
+            .on_hover_text("ユーザーとパスワードを入力して接続")
+            .clicked()
+        {
+            action = Some(SidebarAction::PickDevice(device.clone()));
+        }
+    }
+    if let Some(message) = &lan.scanner.message {
+        ui.label(egui::RichText::new(message).color(theme::TEXT_DIM));
+    }
+    action
 }

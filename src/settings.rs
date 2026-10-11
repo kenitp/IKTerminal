@@ -14,6 +14,8 @@ pub struct Settings {
     pub launch_bitwarden: bool,
     /// Keep running in the notification area after the window is closed.
     pub tray: bool,
+    /// Port probed by the LAN scan in the sidebar.
+    pub scan_port: u16,
 }
 
 impl Default for Settings {
@@ -25,6 +27,7 @@ impl Default for Settings {
             scrollback: 5000,
             launch_bitwarden: true,
             tray: false,
+            scan_port: 22,
         }
     }
 }
@@ -60,6 +63,9 @@ impl Settings {
                 "scrollback" => s.scrollback = value.parse().unwrap_or(s.scrollback),
                 "launch_bitwarden" => s.launch_bitwarden = parse_bool(value),
                 "tray" => s.tray = parse_bool(value),
+                "scan_port" => {
+                    s.scan_port = value.parse().ok().filter(|p| *p > 0).unwrap_or(s.scan_port)
+                }
                 _ => {}
             }
         }
@@ -76,13 +82,14 @@ impl Settings {
             std::fs::create_dir_all(dir)?;
         }
         let text = format!(
-            "font_size = {}\nfont_path = {}\nshell = {}\nscrollback = {}\nlaunch_bitwarden = {}\ntray = {}\n",
+            "font_size = {}\nfont_path = {}\nshell = {}\nscrollback = {}\nlaunch_bitwarden = {}\ntray = {}\nscan_port = {}\n",
             self.font_size,
             self.font_path,
             self.shell,
             self.scrollback,
             self.launch_bitwarden,
-            self.tray
+            self.tray,
+            self.scan_port
         );
         std::fs::write(path, text)
     }

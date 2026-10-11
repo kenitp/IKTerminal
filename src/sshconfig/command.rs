@@ -60,6 +60,21 @@ impl HostDraft {
             proxy_jump: cmd.proxy_jump.clone().unwrap_or_default(),
         }
     }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let alias = self.alias.trim();
+        if alias.is_empty() || self.hostname.trim().is_empty() {
+            return Err("エイリアスとホスト名は必須です".to_owned());
+        }
+        if alias.contains(|c: char| c.is_whitespace() || matches!(c, '*' | '?' | '!')) {
+            return Err("エイリアスに空白やワイルドカードは使えません".to_owned());
+        }
+        let port = self.port.trim();
+        if !port.is_empty() && port.parse::<u16>().ok().filter(|p| *p > 0).is_none() {
+            return Err("ポートが不正です".to_owned());
+        }
+        Ok(())
+    }
 }
 
 /// The last `ssh` command on a shell line (prompt included), if it has a destination.
@@ -96,19 +111,10 @@ pub fn find_ssh_command(line: &str) -> Option<SshCommand> {
 
 /// Inserts or updates a host block in `~/.ssh/config` and rewrites the file.
 pub fn save_host(draft: &HostDraft) -> Result<(), String> {
+    draft.validate()?;
     let alias = draft.alias.trim();
     let hostname = draft.hostname.trim();
-    if alias.is_empty() || hostname.is_empty() {
-        return Err("エイリアスとホスト名は必須です".to_owned());
-    }
-    if alias.split_whitespace().nth(1).is_some() || alias.contains(['*', '?', '!', ' ']) {
-        return Err("エイリアスに空白やワイルドカードは使えません".to_owned());
-    }
     let port = draft.port.trim();
-    if !port.is_empty() && port.parse::<u16>().ok().filter(|p| *p > 0).is_none() {
-        return Err("ポートが不正です".to_owned());
-    }
-
     let path = SshConfig::default_path().ok_or("ホームディレクトリが見つかりません")?;
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let mut doc = Document::parse(&existing);
@@ -405,6 +411,29 @@ mod tests {
         let cmd = find_ssh_command("user@host:~$ ssh -l root admin@db").unwrap();
         assert_eq!(cmd.destination, "db");
         assert_eq!(cmd.user.as_deref(), Some("root"));
+    }
+
+    #[test]
+    fn draft_validation() {
+        let draft = HostDraft {
+            alias: "pi".to_owned(),
+            hostname: "192.168.1.5".to_owned(),
+            user: "pi".to_owned(),
+            port: "22".to_owned(),
+            identity_file: String::new(),
+            proxy_jump: String::new(),
+        };
+        assert!(draft.validate().is_ok());
+        let spaced = HostDraft {
+            alias: "my pi".to_owned(),
+            ..draft.clone()
+        };
+        assert!(spaced.validate().is_err());
+        let bad_port = HostDraft {
+            port: "0".to_owned(),
+            ..draft
+        };
+        assert!(bad_port.validate().is_err());
     }
 
     #[test]

@@ -22,7 +22,7 @@
 app (オーケストレーション: タブ、ダイアログ、ショートカット)
  |-- ui        プレゼンテーション層 (egui 描画と入力)
  |-- session   アプリケーション層 (1 タブ = 端末 + バックエンド)
- |-- backend   I/O 層 (local / ssh / sftp / serial)
+ |-- backend   I/O 層 (local / ssh / sftp / serial / lan)
  |-- terminal  コア層 (端末状態と UI 非依存の共有状態)
  |-- sshconfig 独立モジュール (OpenSSH config の解決と編集)
  |-- settings  独立モジュール (設定の永続化)
@@ -62,10 +62,11 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `backend/cwd.rs` | ローカルシェルの作業ディレクトリ (Windows はプロセスの PEB、Linux は `/proc/<pid>/cwd`) |
 | `backend/serial.rs` | COM ポートの列挙と、8N1 でのバイト転送 |
 | `backend/bitwarden.rs` | SSH 前に Bitwarden デスクトップが止まっていれば起動する |
+| `backend/lan.rs` | `Scanner`: `192.168.0.0/24` と `172.0.0.0/16` のポート開放スキャンと逆引き (Windows は `GetNameInfoW`、Linux は `getnameinfo`) |
 | `backend/ssh/mod.rs` | 接続 (ProxyJump の連鎖)、シェルチャネルの入出力ループ |
 | `backend/ssh/handler.rs` | ホスト鍵検証 (known_hosts) |
 | `backend/ssh/known_hosts.rs` | 変わったホスト鍵の行を除き、新しい鍵を足す |
-| `backend/ssh/auth.rs` | 認証の順序制御 |
+| `backend/ssh/auth.rs` | 認証の順序制御 (渡されたパスワードを最初に試す) |
 | `backend/sftp.rs` | `SftpClient`: 一覧、操作、転送 (再帰・進捗・中止) |
 | `sshconfig/resolve.rs` | `SshConfig`: Include / Host / Match all の解決、ホスト一覧 |
 | `sshconfig/document.rs` | `Document`: 書式を保持した編集用モデル |
@@ -76,6 +77,7 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `ui/tabbar.rs`, `ui/sidebar.rs` | タブバー (ウィンドウ移動、タブの並べ替えと切り離し、新規タブメニュー、ディレクトリのホバー)、サイドバー。操作は `TabAction` / `SidebarAction` で `app` に返す |
 | `ui/chrome.rs` | 枠なしウィンドウのリサイズ端 |
 | `ui/ssh_save_dialog.rs` | `ssh` コマンドを config に追加するか尋ねるダイアログ |
+| `ui/ssh_login_dialog.rs` | LAN スキャンで選んだ機器のエイリアス、ユーザー、パスワード入力 |
 | `ui/serial_dialog.rs` | COM ポートとボーレートの選択 |
 | `ui/terminal/view.rs` | 端末ウィジェット: 入力、選択、スクロール、IME |
 | `ui/terminal/link.rs` | 表示セル上の `http://` / `https://` |
@@ -100,6 +102,7 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 ### 4.2 端末入力
 
 - `ui::terminal::view` がキーを `input::encode_key` でバイト列に変換して `Session::write` に渡す。
+- `app` は先にショートカットを消費する。Ctrl+W は開いているタブを閉じ、対応する `Key` と制御文字 `\x17` は端末へ渡さない。
 - Ctrl+クリックが `http://` または `https://` の上なら、その URL を `app` に返す。`app` がブラウザを開く。Windows は `ShellExecuteW`、Linux は `xdg-open`。マウスレポートへはそのクリックを渡さない。
 - `Session::write` は `Shared` の `PtyIo` に渡す。実体はローカルなら `EventLoopSender`、SSH なら mpsc チャネル。
 - リサイズは `Term::resize` と `PtyIo::resize` を同時に行う。SSH では window-change を送る。
@@ -114,7 +117,15 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 3. PTY を要求してシェルを起動し、入出力ループに入る。
 4. 確立した接続は `Link` (`OnceLock`) で公開し、SFTP が同じ接続上に別チャネルを開く。
 
-### 4.4 SFTP
+### 4.4 LAN スキャン
+
+1. `Scanner::start` が UDP ソケットを既定ルートへ `connect` (送信はしない) して自分の IPv4 を得る。
+2. tokio タスクが `192.168.0.0/24` と `172.0.0.0/16` の各アドレスへ TCP 接続を試す。同時に走らせるのは 64 台までで、1 台 0.8 秒で打ち切る。自分のアドレスは除く。
+3. 開いていたアドレスは `spawn_blocking` で逆引きし、mpsc で `app` に渡して再描画を要求する。
+4. `app` は毎フレーム結果を取り込み、config に登録済みのものを除いてサイドバーに渡す。
+5. 機器を選ぶと `ui::ssh_login_dialog` が `HostDraft` とパスワードを返す。`app` は `user@host:port` の SSH セッションを開き、`PendingSave` として覚える。セッションが `Running` になったら `sshconfig::save_host` で書き込み、終了したら破棄する。
+
+### 4.5 SFTP
 
 - 操作はすべて tokio タスクで実行し、結果を `Arc<Mutex<Listing>>` と `Transfer` (atomic で進捗を持つ) に書く。UI は毎フレームそれを読む。
 - 転送は 256KB 単位でコピーし、チャンクごとに中止フラグを確認する。

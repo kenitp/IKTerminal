@@ -107,6 +107,7 @@ impl Session {
         id: u64,
         config: &SshConfig,
         target: &str,
+        password: Option<String>,
     ) -> Self {
         let host = config.resolve(target);
         let jumps = host.proxy_jump.iter().map(|j| config.resolve(j)).collect();
@@ -116,6 +117,7 @@ impl Session {
             term.clone(),
             host,
             jumps,
+            password,
             settings.launch_bitwarden,
         );
         let sftp = SftpClient::new(link, ctx.clone());

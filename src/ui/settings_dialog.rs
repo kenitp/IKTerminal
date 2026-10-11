@@ -128,6 +128,10 @@ impl SettingsDialog {
                     ui.label("タスクトレイ");
                     ui.checkbox(&mut self.draft.tray, "閉じても終了せず、常駐する");
                     ui.end_row();
+
+                    ui.label("LAN スキャンのポート");
+                    ui.add(egui::DragValue::new(&mut self.draft.scan_port).range(1..=65535));
+                    ui.end_row();
                 });
             ui.label(
                 RichText::new("スクロールバック行数は新しいタブから適用されます")

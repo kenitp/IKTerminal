@@ -54,11 +54,13 @@ impl PtyIo for SshIo {
 }
 
 /// Connects in the background and runs an interactive shell in `term`.
+/// `password` is tried first on the target host.
 pub fn spawn(
     shared: Arc<Shared>,
     term: TermHandle,
     target: HostConfig,
     jumps: Vec<HostConfig>,
+    password: Option<String>,
     launch_bitwarden: bool,
 ) -> Link {
     let link = Link::default();
@@ -66,7 +68,7 @@ pub fn spawn(
     shared.set_io(Box::new(SshIo(tx)));
     let task_link = link.clone();
     super::runtime().spawn(async move {
-        let result = match connect(&shared, &target, &jumps, launch_bitwarden).await {
+        let result = match connect(&shared, &target, &jumps, password, launch_bitwarden).await {
             Ok(conn) => {
                 let conn = Arc::new(conn);
                 let _ = task_link.set(conn.clone());
@@ -98,6 +100,7 @@ async fn open(
     shared: &Arc<Shared>,
     host: &HostConfig,
     via: Option<&Handle<Client>>,
+    password: Option<String>,
 ) -> Result<Handle<Client>, String> {
     let client = Client::new(shared.clone(), &host.hostname, host.port);
     let rejection = client.rejection.clone();
@@ -135,7 +138,7 @@ async fn open(
     };
     let mut handle =
         handshake.map_err(|e| rejection.lock().unwrap().take().unwrap_or_else(|| fail(&e)))?;
-    auth::authenticate(&mut handle, shared, host).await?;
+    auth::authenticate(&mut handle, shared, host, password).await?;
     Ok(handle)
 }
 
@@ -143,17 +146,18 @@ async fn connect(
     shared: &Arc<Shared>,
     target: &HostConfig,
     jumps: &[HostConfig],
+    password: Option<String>,
     launch_bitwarden: bool,
 ) -> Result<Connection, String> {
     if launch_bitwarden {
         super::bitwarden::ensure_running().await;
     }
     let mut chain: Vec<Handle<Client>> = Vec::with_capacity(jumps.len());
-    for hop in jumps.iter().chain(std::iter::once(target)) {
-        let handle = open(shared, hop, chain.last()).await?;
+    for hop in jumps {
+        let handle = open(shared, hop, chain.last(), None).await?;
         chain.push(handle);
     }
-    let handle = chain.pop().expect("target handle");
+    let handle = open(shared, target, chain.last(), password).await?;
     let connection = Connection {
         handle,
         _jumps: chain,
