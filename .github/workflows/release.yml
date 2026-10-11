@@ -91,7 +91,7 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - uses: awalsh128/cache-apt-pkgs-action@v1.5.3
+      - uses: awalsh128/cache-apt-pkgs-action@v1.6.3
         with:
           packages: dpkg-dev gnupg
           version: apt-publish-1

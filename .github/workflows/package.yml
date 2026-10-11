@@ -36,7 +36,7 @@ jobs:
 
       - name: Cache apt packages
         if: runner.os == 'Linux'
-        uses: awalsh128/cache-apt-pkgs-action@v1.5.3
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.3
         with:
           packages: pkg-config libxcb1-dev libxkbcommon-dev libwayland-dev dpkg-dev
           version: linux-deps-1
@@ -44,7 +44,7 @@ jobs:
       - name: Cache Inno Setup
         if: runner.os == 'Windows' && inputs.package
         id: innosetup
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             C:\Program Files (x86)\Inno Setup 6
