@@ -2,6 +2,7 @@
 
 mod app;
 mod backend;
+mod browser;
 mod cursor;
 mod frame;
 mod instance;

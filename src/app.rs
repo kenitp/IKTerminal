@@ -880,6 +880,11 @@ impl App {
                     self.note_ssh_command(index, &line);
                 }
             }
+            if let Some(url) = out.open_url
+                && let Err(error) = crate::browser::open(&url)
+            {
+                self.desks[index].notice = Some(error);
+            }
             if out.zoom != 0.0 {
                 let range = Settings::FONT_SIZE_RANGE;
                 self.settings.font_size =

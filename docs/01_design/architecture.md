@@ -77,6 +77,8 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `ui/ssh_save_dialog.rs` | `ssh` コマンドを config に追加するか尋ねるダイアログ |
 | `ui/serial_dialog.rs` | COM ポートとボーレートの選択 |
 | `ui/terminal/view.rs` | 端末ウィジェット: 入力、選択、スクロール、IME |
+| `ui/terminal/link.rs` | 表示セル上の `http://` / `https://` |
+| `browser.rs` | http(s) URL を OS のブラウザで開く。`app` だけが使う |
 | `ui/terminal/render.rs` | グリッド描画 (背景、文字、装飾、カーソル、変換中文字列) |
 | `ui/terminal/input.rs` | キー / 貼り付け / マウスのエスケープシーケンス生成 |
 | `ui/sftp_panel.rs` | SFTP パネル |
@@ -97,6 +99,7 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 ### 4.2 端末入力
 
 - `ui::terminal::view` がキーを `input::encode_key` でバイト列に変換して `Session::write` に渡す。
+- Ctrl+クリックが `http://` または `https://` の上なら、その URL を `app` に返す。`app` がブラウザを開く。Windows は `ShellExecuteW`、Linux は `xdg-open`。マウスレポートへはそのクリックを渡さない。
 - `Session::write` は `Shared` の `PtyIo` に渡す。実体はローカルなら `EventLoopSender`、SSH なら mpsc チャネル。
 - リサイズは `Term::resize` と `PtyIo::resize` を同時に行う。SSH では window-change を送る。
 

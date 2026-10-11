@@ -24,6 +24,8 @@ struct ViewState {
     preedit: String,
     held_button: Option<u8>,
     last_cell: Option<(usize, usize)>,
+    /// URL under the Ctrl+press, opened if the release is still on it.
+    pending_url: Option<String>,
 }
 
 pub struct Output {
@@ -35,6 +37,8 @@ pub struct Output {
     pub swallow_enter: bool,
     /// The line above the command, used when the prompt prints the directory there.
     pub line_above: Option<String>,
+    /// http(s) URL to open. Ctrl+click on text in the grid.
+    pub open_url: Option<String>,
 }
 
 struct Grid {
@@ -92,6 +96,7 @@ pub fn show(ui: &mut Ui, session: &mut Session, font: &TermFont, want_focus: boo
         command_line: None,
         swallow_enter: false,
         line_above: None,
+        open_url: None,
     };
     let (events, modifiers, press_origin) =
         ui.input(|i| (i.events.clone(), i.modifiers, i.pointer.press_origin()));
@@ -218,10 +223,33 @@ pub fn show(ui: &mut Ui, session: &mut Session, font: &TermFont, want_focus: boo
             }
             Event::PointerButton {
                 pos,
+                button: PointerButton::Primary,
+                pressed: false,
+                ..
+            } if state.pending_url.is_some() => {
+                let armed = state.pending_url.take();
+                if rect.contains(*pos) && url_at(&term, &grid, *pos) == armed {
+                    out.open_url = armed;
+                }
+            }
+            Event::PointerButton {
+                pos,
                 button,
                 pressed,
                 modifiers: m,
-            } if mouse_mode && rect.contains(*pos) => {
+            } if rect.contains(*pos) => {
+                if *button == PointerButton::Primary
+                    && *pressed
+                    && m.ctrl
+                    && !m.shift
+                    && let Some(url) = url_at(&term, &grid, *pos)
+                {
+                    state.pending_url = Some(url);
+                    continue;
+                }
+                if !mouse_mode {
+                    continue;
+                }
                 let code = match button {
                     PointerButton::Primary => BUTTON_LEFT,
                     PointerButton::Middle => BUTTON_MIDDLE,
@@ -255,6 +283,18 @@ pub fn show(ui: &mut Ui, session: &mut Session, font: &TermFont, want_focus: boo
         }
     }
 
+    let link_hover = hovered
+        && modifiers.ctrl
+        && !modifiers.shift
+        && ui
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|pos| url_at(&term, &grid, pos).is_some());
+    if link_hover {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    } else if hovered && !mouse_mode {
+        ui.ctx().set_cursor_icon(CursorIcon::Text);
+    }
+
     if !mouse_mode {
         let offset = term.grid().display_offset();
         let to_point = |pos: Pos2| {
@@ -264,7 +304,10 @@ pub fn show(ui: &mut Ui, session: &mut Session, font: &TermFont, want_focus: boo
                 side,
             )
         };
-        if let Some(pos) = response.interact_pointer_pos() {
+        let follow_link = state.pending_url.is_some() || out.open_url.is_some();
+        if !follow_link
+            && let Some(pos) = response.interact_pointer_pos()
+        {
             let (point, side) = to_point(pos);
             if response.triple_clicked() {
                 term.selection = Some(Selection::new(SelectionType::Lines, point, side));
@@ -299,9 +342,6 @@ pub fn show(ui: &mut Ui, session: &mut Session, font: &TermFont, want_focus: boo
                     }
                 }
             }
-        }
-        if hovered {
-            ui.ctx().set_cursor_icon(CursorIcon::Text);
         }
     }
 
@@ -343,6 +383,16 @@ pub fn show(ui: &mut Ui, session: &mut Session, font: &TermFont, want_focus: boo
     }
     ui.data_mut(|d| d.insert_temp(id, state));
     out
+}
+
+fn url_at(
+    term: &alacritty_terminal::Term<crate::terminal::Listener>,
+    grid: &Grid,
+    pos: Pos2,
+) -> Option<String> {
+    let (col, row, _) = grid.cell_at(pos);
+    let point = viewport_to_point(term.grid().display_offset(), Point::new(row, Column(col)));
+    super::link::at(term, point)
 }
 
 fn line_above(term: &alacritty_terminal::Term<crate::terminal::Listener>) -> Option<String> {
