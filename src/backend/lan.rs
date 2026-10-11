@@ -155,13 +155,15 @@ fn scan_prefix(local: Ipv4Addr) -> Option<(Ipv4Addr, u32)> {
 
 /// Hosts in `scan_prefix`, without the network and broadcast addresses, and without `local`.
 fn targets(local: Ipv4Addr) -> impl Iterator<Item = Ipv4Addr> {
-    scan_prefix(local).into_iter().flat_map(move |(base, prefix)| {
-        let start = u32::from(base);
-        let count = 1u32 << (32 - prefix);
-        (1..count - 1)
-            .map(move |offset| Ipv4Addr::from(start + offset))
-            .filter(move |addr| *addr != local)
-    })
+    scan_prefix(local)
+        .into_iter()
+        .flat_map(move |(base, prefix)| {
+            let start = u32::from(base);
+            let count = 1u32 << (32 - prefix);
+            (1..count - 1)
+                .map(move |offset| Ipv4Addr::from(start + offset))
+                .filter(move |addr| *addr != local)
+        })
 }
 
 #[cfg(any(windows, target_os = "linux"))]
