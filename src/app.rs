@@ -429,6 +429,7 @@ impl App {
         match update::apply(&staged) {
             Ok(()) => {
                 self.update_launched = true;
+                self.quitting = true;
                 ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
             }
             Err(error) => {

@@ -153,15 +153,22 @@ fn stage(version: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
 
 #[cfg(windows)]
 fn apply_windows(installer: &Path) -> std::io::Result<()> {
-    let installer = installer
-        .canonicalize()
-        .unwrap_or_else(|_| installer.to_path_buf());
-    let elevate = needs_elevation();
-    let verb = if elevate { " -Verb RunAs" } else { "" };
-    let command = format!(
-        "Wait-Process -Id {} -ErrorAction SilentlyContinue; Start-Process -FilePath {} -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'{verb}",
+    let installer = installer_path(installer);
+    let exe = std::env::current_exe()?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| std::io::Error::other("インストール先が見つかりません"))?;
+    let directory = plain_path(dir);
+    let elevate = !dir_writable(dir);
+    // PrivilegesRequired=lowest drops an elevated token unless /ALLUSERS is set,
+    // so a Program Files install would not be replaced.
+    let all_users = elevate || in_program_files(&directory);
+    let command = powershell_command(
         std::process::id(),
-        ps_quote(&installer.display().to_string()),
+        &installer,
+        &directory,
+        all_users,
+        elevate,
     );
     std::process::Command::new(windows_powershell())
         .args([
@@ -178,13 +185,13 @@ fn apply_windows(installer: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(windows)]
-fn needs_elevation() -> bool {
-    let Ok(exe) = std::env::current_exe() else {
-        return false;
-    };
-    let Some(dir) = exe.parent() else {
-        return false;
-    };
+fn installer_path(path: &Path) -> String {
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    plain_path(&path)
+}
+
+#[cfg(windows)]
+fn dir_writable(dir: &Path) -> bool {
     let probe = dir.join(format!(".ikterminal-update-{}", std::process::id()));
     match std::fs::OpenOptions::new()
         .write(true)
@@ -193,11 +200,26 @@ fn needs_elevation() -> bool {
     {
         Ok(_) => {
             let _ = std::fs::remove_file(probe);
-            false
+            true
         }
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => true,
-        Err(_) => false,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+        Err(_) => true,
     }
+}
+
+/// `Program Files` stays an all-users install even when this process can already write there.
+#[cfg(windows)]
+fn in_program_files(dir: &str) -> bool {
+    let dir = dir.trim_end_matches(['\\', '/']).to_ascii_lowercase();
+    ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .any(|root| {
+            let root = root.trim_end_matches(['\\', '/']).to_ascii_lowercase();
+            dir == root
+                || dir.starts_with(&format!(r"{root}\"))
+                || dir.starts_with(&format!("{root}/"))
+        })
 }
 
 /// Windows PowerShell is not on `PATH` for a GUI process. Use the OS install path.
@@ -208,9 +230,46 @@ fn windows_powershell() -> PathBuf {
     root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe")
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn ps_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
+}
+
+/// ShellExecute (`RunAs`) rejects `\\?\` paths, so the command uses a normal path.
+#[cfg(any(windows, test))]
+fn plain_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let Some(rest) = text.strip_prefix(r"\\?\") else {
+        return text.into_owned();
+    };
+    rest.strip_prefix(r"UNC\")
+        .map(|unc| format!(r"\\{unc}"))
+        .unwrap_or_else(|| rest.to_owned())
+}
+
+#[cfg(any(windows, test))]
+fn powershell_command(
+    pid: u32,
+    installer: &str,
+    directory: &str,
+    all_users: bool,
+    elevate: bool,
+) -> String {
+    let dir_arg = format!("/DIR={directory}");
+    let scope = if all_users { "/ALLUSERS" } else { "/CURRENTUSER" };
+    let args = [
+        "/VERYSILENT",
+        "/SUPPRESSMSGBOXES",
+        "/NORESTART",
+        dir_arg.as_str(),
+        scope,
+    ];
+    let arg_list = args.iter().copied().map(ps_quote).collect::<Vec<_>>().join(",");
+    let verb = if elevate { " -Verb RunAs" } else { "" };
+    format!(
+        "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; Start-Process -FilePath {} -ArgumentList {arg_list}{verb}",
+        ps_quote(installer),
+    )
 }
 
 #[cfg(not(windows))]
@@ -778,6 +837,60 @@ mod tests {
     #[test]
     fn windows_powershell_is_installed() {
         assert!(super::windows_powershell().is_file());
+    }
+
+    #[test]
+    fn windows_update_command_replaces_a_machine_install() {
+        let command = powershell_command(
+            10,
+            r"C:\Temp\IkTerminal-0.2.0-setup.exe",
+            r"C:\Program Files\IkTerminal",
+            true,
+            true,
+        );
+        assert!(command.contains(r"-FilePath 'C:\Temp\IkTerminal-0.2.0-setup.exe'"));
+        assert!(command.contains(r"'/DIR=C:\Program Files\IkTerminal'"));
+        assert!(command.contains("'/ALLUSERS'"));
+        assert!(command.contains("-Verb RunAs"));
+        assert!(!command.contains(r"\\?\"));
+    }
+
+    #[test]
+    fn per_user_update_stays_in_the_user_directory() {
+        let command = powershell_command(
+            10,
+            r"C:\Temp\setup.exe",
+            r"C:\Users\a\AppData\Local\Programs\IkTerminal",
+            false,
+            false,
+        );
+        assert!(command.contains("'/CURRENTUSER'"));
+        assert!(!command.contains("RunAs"));
+        assert!(!command.contains("ALLUSERS"));
+    }
+
+    #[test]
+    fn plain_path_strips_the_verbatim_prefix() {
+        assert_eq!(
+            plain_path(Path::new(r"\\?\C:\Temp\setup.exe")),
+            r"C:\Temp\setup.exe"
+        );
+        assert_eq!(
+            plain_path(Path::new(r"\\?\UNC\server\share\setup.exe")),
+            r"\\server\share\setup.exe"
+        );
+        assert_eq!(plain_path(Path::new(r"C:\Temp\setup.exe")), r"C:\Temp\setup.exe");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn program_files_is_a_machine_directory() {
+        let root = std::env::var("ProgramFiles").unwrap();
+        assert!(in_program_files(&root));
+        assert!(in_program_files(&format!(r"{root}\IkTerminal")));
+        assert!(!in_program_files(
+            r"C:\Users\a\AppData\Local\Programs\IkTerminal"
+        ));
     }
 
     #[test]
