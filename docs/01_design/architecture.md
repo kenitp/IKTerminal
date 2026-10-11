@@ -62,7 +62,7 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `backend/cwd.rs` | ローカルシェルの作業ディレクトリ (Windows はプロセスの PEB、Linux は `/proc/<pid>/cwd`) |
 | `backend/serial.rs` | COM ポートの列挙と、8N1 でのバイト転送 |
 | `backend/bitwarden.rs` | SSH 前に Bitwarden デスクトップが止まっていれば起動する |
-| `backend/lan.rs` | `Scanner`: `192.168.0.0/24` と `172.0.0.0/16` のポート開放スキャンと逆引き (Windows は `GetNameInfoW`、Linux は `getnameinfo`) |
+| `backend/lan.rs` | `Scanner`: 自分の `192.168.x.0/24` または `172.x.0.0/16` のポート開放スキャンと逆引き (Windows は `GetNameInfoW`、Linux は `getnameinfo`) |
 | `backend/ssh/mod.rs` | 接続 (ProxyJump の連鎖)、シェルチャネルの入出力ループ |
 | `backend/ssh/handler.rs` | ホスト鍵検証 (known_hosts) |
 | `backend/ssh/known_hosts.rs` | 変わったホスト鍵の行を除き、新しい鍵を足す |
@@ -120,7 +120,7 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 ### 4.4 LAN スキャン
 
 1. `Scanner::start` が UDP ソケットを既定ルートへ `connect` (送信はしない) して自分の IPv4 を得る。
-2. tokio タスクが `192.168.0.0/24` と `172.0.0.0/16` の各アドレスへ TCP 接続を試す。同時に走らせるのは 64 台までで、1 台 0.8 秒で打ち切る。自分のアドレスは除く。
+2. tokio タスクが、自分のアドレスが `192.168.x.y` なら `192.168.x.0/24`、`172.x.y.z` なら `172.x.0.0/16` の各アドレスへ TCP 接続を試す。同時に走らせるのは 64 台までで、1 台 0.8 秒で打ち切る。自分のアドレスは除く。
 3. 開いていたアドレスは `spawn_blocking` で逆引きし、mpsc で `app` に渡して再描画を要求する。
 4. `app` は毎フレーム結果を取り込み、config に登録済みのものを除いてサイドバーに渡す。
 5. 機器を選ぶと `ui::ssh_login_dialog` が `HostDraft` とパスワードを返す。`app` は `user@host:port` の SSH セッションを開き、`PendingSave` として覚える。セッションが `Running` になったら `sshconfig::save_host` で書き込み、終了したら破棄する。

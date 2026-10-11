@@ -1,4 +1,4 @@
-//! LAN discovery: hosts in fixed IPv4 ranges that accept TCP on a port.
+//! LAN discovery: hosts on the local 192.168 /24 or 172 /16 that accept TCP on a port.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
@@ -55,7 +55,12 @@ impl Scanner {
         self.devices.clear();
         self.message = None;
         match local_ipv4() {
-            Ok(local) => self.rx = Some(spawn(local, port, Arc::new(wake))),
+            Ok(local) if scan_prefix(local).is_some() => {
+                self.rx = Some(spawn(local, port, Arc::new(wake)));
+            }
+            Ok(local) => {
+                self.message = Some(format!("{local} はスキャン対象外です"));
+            }
             Err(error) => self.message = Some(format!("スキャンできません: {error}")),
         }
     }
@@ -139,14 +144,18 @@ fn local_ipv4() -> std::io::Result<Ipv4Addr> {
     }
 }
 
-const RANGES: [(Ipv4Addr, u32); 2] = [
-    (Ipv4Addr::new(192, 168, 0, 0), 24),
-    (Ipv4Addr::new(172, 0, 0, 0), 16),
-];
+/// `192.168.x.0/24` or `172.x.0.0/16`, with `x` taken from `local`.
+fn scan_prefix(local: Ipv4Addr) -> Option<(Ipv4Addr, u32)> {
+    match local.octets() {
+        [192, 168, third, _] => Some((Ipv4Addr::new(192, 168, third, 0), 24)),
+        [172, second, _, _] => Some((Ipv4Addr::new(172, second, 0, 0), 16)),
+        _ => None,
+    }
+}
 
-/// Hosts in `RANGES`, without each prefix's network and broadcast address, and without `local`.
+/// Hosts in `scan_prefix`, without the network and broadcast addresses, and without `local`.
 fn targets(local: Ipv4Addr) -> impl Iterator<Item = Ipv4Addr> {
-    RANGES.into_iter().flat_map(move |(base, prefix)| {
+    scan_prefix(local).into_iter().flat_map(move |(base, prefix)| {
         let start = u32::from(base);
         let count = 1u32 << (32 - prefix);
         (1..count - 1)
@@ -253,16 +262,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn targets_are_the_two_ranges_without_self() {
-        let local = Ipv4Addr::new(192, 168, 0, 10);
+    fn targets_follow_the_local_prefix() {
+        let local = Ipv4Addr::new(192, 168, 1, 10);
         let all: Vec<_> = targets(local).collect();
-        assert_eq!(all[0], Ipv4Addr::new(192, 168, 0, 1));
-        assert_eq!(all.len(), 253 + (1 << 16) - 2);
+        assert_eq!(all.len(), 253);
+        assert_eq!(all[0], Ipv4Addr::new(192, 168, 1, 1));
+        assert_eq!(*all.last().unwrap(), Ipv4Addr::new(192, 168, 1, 254));
         assert!(!all.contains(&local));
-        assert!(!all.contains(&Ipv4Addr::new(192, 168, 0, 0)));
-        assert!(!all.contains(&Ipv4Addr::new(192, 168, 1, 1)));
-        assert!(all.contains(&Ipv4Addr::new(172, 0, 0, 1)));
-        assert_eq!(*all.last().unwrap(), Ipv4Addr::new(172, 0, 255, 254));
+
+        let local = Ipv4Addr::new(172, 24, 163, 106);
+        let all: Vec<_> = targets(local).collect();
+        assert_eq!(all.len(), (1 << 16) - 3);
+        assert_eq!(all[0], Ipv4Addr::new(172, 24, 0, 1));
+        assert_eq!(*all.last().unwrap(), Ipv4Addr::new(172, 24, 255, 254));
+        assert!(!all.contains(&local));
+        assert!(!all.contains(&Ipv4Addr::new(172, 0, 0, 1)));
+
+        assert_eq!(targets(Ipv4Addr::new(10, 1, 2, 3)).count(), 0);
     }
 
     #[test]
