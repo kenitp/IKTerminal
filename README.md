@@ -26,13 +26,19 @@ Windows インストーラ (Inno Setup 6):
 .\scripts\build-installer.ps1  # target\installer\IkTerminal-<version>-setup.exe
 ```
 
-Linux アーカイブ:
+Linux パッケージ (`dpkg-dev` が必要):
 
 ```sh
-./scripts/package-linux.sh  # target/dist/IkTerminal-<version>-linux-<arch>.tar.gz
+./scripts/package-linux.sh
+# target/dist/IkTerminal-<version>-linux-<arch>.deb
+# target/dist/IkTerminal-<version>-linux-<arch>.tar.gz
 ```
 
-Linux の実行には libxcb、libxkbcommon、libxkbcommon-x11、OpenGL が必要。
+```sh
+sudo apt install ./IkTerminal-<version>-linux-x86_64.deb
+```
+
+インストール後はアプリメニューに登録され、`ikt` / `ikterminal` が使える。デフォルト端末にするときは `sudo update-alternatives --config x-terminal-emulator`。xdg-terminal-exec 利用時は `~/.config/xdg-terminals.list` に `ikterminal.desktop` を書く。
 
 ## ドキュメント
 

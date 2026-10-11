@@ -10,7 +10,7 @@ use alacritty_terminal::tty;
 
 use crate::terminal::{Listener, PtyIo, Status, TermHandle};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShellSpec {
     pub name: String,
     pub program: String,

@@ -20,9 +20,9 @@ fn main() -> eframe::Result {
         instance::Role::Forwarded => return Ok(()),
         instance::Role::Primary(incoming) => incoming,
     };
-    let (directory, notice) = match launch {
-        Ok(dir) => (dir, None),
-        Err(error) => (None, Some(error)),
+    let (directory, execute, notice) = match launch {
+        Ok(launch) => (launch.directory, launch.execute, None),
+        Err(error) => (None, None, Some(error)),
     };
     let icon = egui::IconData {
         rgba: include_bytes!("../assets/icon-64.rgba").to_vec(),
@@ -43,6 +43,10 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "IkTerminal",
         options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, directory, notice, incoming)))),
+        Box::new(move |cc| {
+            Ok(Box::new(app::App::new(
+                cc, directory, execute, notice, incoming,
+            )))
+        }),
     )
 }

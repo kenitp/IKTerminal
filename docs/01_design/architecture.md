@@ -45,7 +45,7 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | パス | 役割 |
 | --- | --- |
 | `main.rs` | ウィンドウ設定と起動。OS のタイトルバーは出さない |
-| `launch.rs` | 起動引数のフォルダ解決 (`ikt .`) |
+| `launch.rs` | 起動引数の解決 (`ikt [フォルダ]` / `-e`) |
 | `instance.rs` | 単一インスタンス。後続の起動は既存プロセスへフォルダを渡して終了する |
 | `update.rs` | 最新 Release の確認と、`Ver.Up` で始める更新。`app` だけが使う |
 | `frame.rs` | OS タイトルバーを消す。Windows ではこのスレッドの winit ウィンドウから `WS_CAPTION` を外す |
@@ -144,14 +144,19 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 
 バージョンの正は `Cargo.toml` の `version` である。`scripts/version.sh` と `scripts/build-installer.ps1` はここから読む。Windows リソースの `FILEVERSION` はビルド時の `CARGO_PKG_VERSION` から生成する。
 
-- `build.rs` は Windows 向けビルドで、`assets/icon.ico` とパッケージバージョンからリソーススクリプトを生成して埋め込む。ウィンドウアイコンは `assets/icon-64.rgba`。
+- `build.rs` は Windows 向けビルドで、`assets/icon.ico` とパッケージバージョンからリソーススクリプトを生成して埋め込む。ウィンドウアイコンは `assets/icon-64.rgba`。Linux `.deb` のメニューアイコンは `assets/icon-64.png` / `assets/icon-256.png`。
 - インストーラは `ikterminal.exe` と同一の `ikt.exe` を置き、インストール先をユーザーの PATH と App Paths に登録する。
 - release プロファイルの設定: `opt-level = "s"`、LTO、`codegen-units = 1`、strip。
 - `scripts/build-installer.ps1` の処理:
   1. `cargo build --release` を実行する。
   2. `Cargo.toml` のバージョンを `ISCC /DAppVersion` に渡して `installer/ikterminal.iss` をビルドする。
   3. `target/installer/` に出力する。
-- `scripts/package-linux.sh` は release バイナリを `target/dist/IkTerminal-<version>-linux-<arch>.tar.gz` にまとめる。実行時は libxcb、libxkbcommon、libxkbcommon-x11、OpenGL を動的に読む。
+- `scripts/package-linux.sh` の処理:
+  1. `cargo build --release` を実行する。
+  2. `target/dist/IkTerminal-<version>-linux-<arch>.tar.gz` にバイナリをまとめる (Ver.Up 用)。
+  3. `packaging/linux/` の desktop / maintainer scripts と `assets/icon-*.png` から `.deb` を組み立て、`target/dist/IkTerminal-<version>-linux-<arch>.deb` を出力する。`dpkg-deb` が必要。
+  4. 実行時は libxcb、libxkbcommon、libxkbcommon-x11、OpenGL を動的に読む。
+- 起動引数は `launch.rs` が `Launch { directory, execute }` にまとめる。`-e` は初期ローカルタブの `ShellSpec` になる。単一インスタンス転送はディレクトリ指定のみ。`-e` は既存インスタンスがいても別ウィンドウにする。
 - GitHub Actions
-  - `Build` は push と pull request で `.github/workflows/package.yml` を呼ぶ。Windows と Linux で clippy、テスト、配布物の生成を行う。
+  - `Build` は push と pull request で `.github/workflows/package.yml` を呼ぶ。Windows と Linux で clippy、テスト、配布物 (Windows インストーラ、Linux `.deb` / `.tar.gz`) の生成を行う。
   - `Release` は `main` への push で動く。`version` が push 前のコミットと異なり、`v<version>` タグが無いとき、同じ package ワークフローの成果物を GitHub Release に載せる。失敗した実行の再実行と、手動実行は、タグが無いときに Release を作る。

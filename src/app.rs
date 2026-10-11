@@ -130,6 +130,7 @@ impl App {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         directory: Option<PathBuf>,
+        execute: Option<ShellSpec>,
         notice: Option<String>,
         incoming: Receiver<Request>,
     ) -> Self {
@@ -172,7 +173,8 @@ impl App {
             quitting: false,
             pending_cursor: None,
         };
-        if let Some(shell) = app.default_shell() {
+        let shell = execute.or_else(|| app.default_shell());
+        if let Some(shell) = shell {
             app.open_shell(&cc.egui_ctx, 0, &shell);
         }
         app.sync_tray(&cc.egui_ctx);

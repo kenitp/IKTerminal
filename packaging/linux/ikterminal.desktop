@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=IkTerminal
+Comment=Lightweight terminal with SSH/SFTP
+Exec=ikterminal
+Icon=ikterminal
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupNotify=true
+StartupWMClass=IkTerminal
+X-TerminalArgExec=-e

@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::launch::Launch;
+
 pub enum Role {
     Forwarded,
     Primary(Receiver<Request>),
@@ -31,13 +33,39 @@ pub fn bind_wake(wake: impl Fn() + Send + Sync + 'static) {
     }
 }
 
-pub fn attach(launch: &Result<Option<PathBuf>, String>) -> Role {
-    let request = match launch {
-        Ok(Some(path)) => Request::Dir(path.clone()),
-        Ok(None) => Request::Home,
-        Err(message) => Request::Notice(message.clone()),
-    };
-    claim(request)
+pub fn attach(launch: &Result<Launch, String>) -> Role {
+    match launch {
+        Ok(Launch {
+            execute: Some(_), ..
+        }) => claim_execute(),
+        Ok(Launch {
+            directory: Some(path),
+            ..
+        }) => claim(Request::Dir(path.clone())),
+        Ok(_) => claim(Request::Home),
+        Err(message) => claim(Request::Notice(message.clone())),
+    }
+}
+
+/// `-e` opens its own window. If another instance already owns the socket, do not
+/// forward; start a separate primary without taking over the listener.
+fn claim_execute() -> Role {
+    #[cfg(unix)]
+    {
+        if let Ok(path) = socket_path()
+            && std::os::unix::net::UnixStream::connect(&path).is_ok()
+        {
+            return Role::Primary(idle());
+        }
+    }
+    #[cfg(windows)]
+    {
+        let name = pipe_name();
+        if pipe_exists(&name) {
+            return Role::Primary(idle());
+        }
+    }
+    claim(Request::Home)
 }
 
 fn wake() {
@@ -326,6 +354,15 @@ fn own_mutex() -> bool {
         return false;
     }
     OWNER.get().is_some()
+}
+
+#[cfg(windows)]
+fn pipe_exists(name: &str) -> bool {
+    let Some(handle) = open_pipe(name) else {
+        return false;
+    };
+    close_handle(handle);
+    true
 }
 
 #[cfg(windows)]
