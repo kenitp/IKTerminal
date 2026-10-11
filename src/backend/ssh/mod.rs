@@ -2,6 +2,7 @@
 
 mod auth;
 mod handler;
+mod known_hosts;
 
 use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};

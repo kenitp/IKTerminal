@@ -25,11 +25,11 @@ fn main() -> eframe::Result {
         Ok(launch) => (launch.directory, launch.execute, None),
         Err(error) => (None, None, Some(error)),
     };
-    let icon = egui::IconData {
+    let icon = std::sync::Arc::new(egui::IconData {
         rgba: include_bytes!("../assets/icon-64.rgba").to_vec(),
         width: 64,
         height: 64,
-    };
+    });
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("IkTerminal")
@@ -37,7 +37,7 @@ fn main() -> eframe::Result {
             .with_inner_size([1100.0, 700.0])
             .with_min_inner_size([480.0, 300.0])
             .with_decorations(false)
-            .with_icon(icon),
+            .with_icon(std::sync::Arc::clone(&icon)),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
@@ -46,7 +46,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             Ok(Box::new(app::App::new(
-                cc, directory, execute, notice, incoming,
+                cc, icon, directory, execute, notice, incoming,
             )))
         }),
     )

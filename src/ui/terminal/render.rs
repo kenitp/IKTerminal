@@ -161,9 +161,14 @@ impl Frame<'_> {
                 }
             } else {
                 self.flush(&mut run);
-                let mut s = c.to_string();
-                s.extend(zerowidth.into_iter().flatten());
-                self.text(rect.min, &s, fg, bold);
+                match zerowidth {
+                    None => self.text(rect.min, c.encode_utf8(&mut [0; 4]), fg, bold),
+                    Some(marks) => {
+                        let mut s = String::from(c);
+                        s.extend(marks);
+                        self.text(rect.min, &s, fg, bold);
+                    }
+                }
             }
         }
         self.flush(&mut run);
@@ -217,7 +222,7 @@ impl Frame<'_> {
                 if cell.c != ' ' && cell.c != '\0' {
                     self.text(
                         rect.min,
-                        &cell.c.to_string(),
+                        cell.c.encode_utf8(&mut [0; 4]),
                         theme::rgb(palette::BACKGROUND),
                         false,
                     );

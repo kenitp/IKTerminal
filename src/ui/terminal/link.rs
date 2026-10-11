@@ -2,10 +2,10 @@
 //!
 //! Wrapped rows are one line. The click hits the URL when its column falls inside the span.
 
+use alacritty_terminal::Term;
 use alacritty_terminal::grid::{Dimensions, Grid};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::{Cell, Flags};
-use alacritty_terminal::Term;
 
 use crate::terminal::Listener;
 
@@ -95,7 +95,11 @@ fn scheme_len(text: &str, i: usize) -> Option<usize> {
     } else {
         return None;
     };
-    if text[..i].chars().next_back().is_some_and(|c| c.is_ascii_alphanumeric()) {
+    if text[..i]
+        .chars()
+        .next_back()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
+    {
         return None;
     }
     Some(len)
@@ -176,10 +180,7 @@ mod tests {
     fn click_inside_an_https_url() {
         let text = "see https://example.com/a?b=1&c=2 next";
         let at = text.find("example").unwrap();
-        assert_eq!(
-            covering(text, at),
-            Some("https://example.com/a?b=1&c=2")
-        );
+        assert_eq!(covering(text, at), Some("https://example.com/a?b=1&c=2"));
     }
 
     #[test]
@@ -188,10 +189,7 @@ mod tests {
         let at = text.find("http").unwrap();
         assert_eq!(covering(text, at), Some("http://example.com/rust_(lang)"));
         let wrapped = "(https://example.com/foo).";
-        assert_eq!(
-            covering(wrapped, 1),
-            Some("https://example.com/foo")
-        );
+        assert_eq!(covering(wrapped, 1), Some("https://example.com/foo"));
     }
 
     #[test]

@@ -166,16 +166,8 @@ impl Session {
         title
     }
 
-    /// Tab text: `folder · shell`. The tooltip is the full directory.
-    pub fn tab_title(&self) -> String {
-        self.tab_text().0
-    }
-
-    pub fn tab_tooltip(&self) -> String {
-        self.tab_text().1
-    }
-
-    fn tab_text(&self) -> (String, String) {
+    /// Tab text `folder · shell` and the full directory for the tooltip.
+    pub fn tab_text(&self) -> (String, String) {
         tab_text(&self.title(), self.working_directory().as_deref())
     }
 

@@ -305,9 +305,7 @@ pub fn show(ui: &mut Ui, session: &mut Session, font: &TermFont, want_focus: boo
             )
         };
         let follow_link = state.pending_url.is_some() || out.open_url.is_some();
-        if !follow_link
-            && let Some(pos) = response.interact_pointer_pos()
-        {
+        if !follow_link && let Some(pos) = response.interact_pointer_pos() {
             let (point, side) = to_point(pos);
             if response.triple_clicked() {
                 term.selection = Some(Selection::new(SelectionType::Lines, point, side));

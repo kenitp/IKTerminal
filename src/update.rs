@@ -5,7 +5,7 @@
 
 #[cfg(any(test, all(not(debug_assertions), not(windows))))]
 use std::io::Read;
-#[cfg(not(debug_assertions))]
+#[cfg(any(test, not(debug_assertions)))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 #[cfg(not(debug_assertions))]
@@ -97,9 +97,17 @@ pub fn apply(staged: &StagedUpdate) -> std::io::Result<()> {
 fn fetch() -> Check {
     static GATE: Mutex<()> = Mutex::new(());
     let _gate = GATE.lock().unwrap_or_else(|error| error.into_inner());
-    let Some(body) = http_get(LATEST, Some("application/vnd.github+json"), JSON_LIMIT) else {
+    let mut body = Vec::new();
+    if http_get(
+        LATEST,
+        Some("application/vnd.github+json"),
+        JSON_LIMIT,
+        &mut body,
+    )
+    .is_none()
+    {
         return Check::Failed;
-    };
+    }
     let Ok(json) = String::from_utf8(body) else {
         return Check::Failed;
     };
@@ -113,13 +121,7 @@ fn fetch() -> Check {
     let Some(asset) = release.assets.iter().find(|asset| asset.name == name) else {
         return Check::Failed;
     };
-    let Some(bytes) = http_get(&asset.url, None, ASSET_LIMIT) else {
-        return Check::Failed;
-    };
-    if sha256(&bytes) != asset.sha256 {
-        return Check::Failed;
-    }
-    let Ok(path) = stage(&release.version, &bytes) else {
+    let Ok(path) = download(&release.version, asset) else {
         return Check::Failed;
     };
     Check::Ready(StagedUpdate {
@@ -128,27 +130,67 @@ fn fetch() -> Check {
     })
 }
 
+/// Streams the asset to disk while hashing it. The payload is never held in memory.
 #[cfg(not(debug_assertions))]
-fn stage(version: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+fn download(version: &str, asset: &Asset) -> std::io::Result<PathBuf> {
+    use sha2::Digest;
+
     let dir = std::env::temp_dir().join(format!("IkTerminal-update-{version}"));
     std::fs::create_dir_all(&dir)?;
-    #[cfg(all(windows, not(debug_assertions)))]
-    let path = dir.join(asset_name(version));
-    #[cfg(not(windows))]
-    let path = dir.join("ikterminal");
-    #[cfg(all(windows, not(debug_assertions)))]
-    let payload = bytes;
-    #[cfg(not(windows))]
-    let payload = &extract_ikterminal(bytes)?;
-    let partial = path.with_extension("partial");
-    {
-        let mut file = std::fs::File::create(&partial)?;
-        file.write_all(payload)?;
-        file.sync_all()?;
+    let archive = dir.join(&asset.name);
+    let partial = archive.with_extension("partial");
+    let mut sink = Hashing {
+        file: std::fs::File::create(&partial)?,
+        hasher: sha2::Sha256::new(),
+    };
+    let fetched = http_get(&asset.url, None, ASSET_LIMIT, &mut sink);
+    let synced = sink.file.sync_all();
+    let digest = sink.hasher.finalize();
+    drop(sink.file);
+    if fetched.is_none() || synced.is_err() || digest[..] != asset.sha256[..] {
+        let _ = std::fs::remove_file(&partial);
+        return Err(std::io::Error::other("配布物を検証できません"));
     }
-    let _ = std::fs::remove_file(&path);
-    std::fs::rename(&partial, &path)?;
-    Ok(path)
+    #[cfg(windows)]
+    {
+        let _ = std::fs::remove_file(&archive);
+        std::fs::rename(&partial, &archive)?;
+        Ok(archive)
+    }
+    #[cfg(not(windows))]
+    {
+        let binary = dir.join("ikterminal");
+        let staging = dir.join("ikterminal.partial");
+        let extracted = std::fs::File::open(&partial).and_then(|gzip| {
+            let mut out = std::fs::File::create(&staging)?;
+            extract_ikterminal(gzip, &mut out)?;
+            out.sync_all()
+        });
+        let _ = std::fs::remove_file(&partial);
+        extracted?;
+        let _ = std::fs::remove_file(&binary);
+        std::fs::rename(&staging, &binary)?;
+        Ok(binary)
+    }
+}
+
+#[cfg(not(debug_assertions))]
+struct Hashing {
+    file: std::fs::File,
+    hasher: sha2::Sha256,
+}
+
+#[cfg(not(debug_assertions))]
+impl Write for Hashing {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.file.write(buf)?;
+        sha2::Digest::update(&mut self.hasher, &buf[..written]);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
 }
 
 #[cfg(windows)]
@@ -256,7 +298,11 @@ fn powershell_command(
     elevate: bool,
 ) -> String {
     let dir_arg = format!("/DIR={directory}");
-    let scope = if all_users { "/ALLUSERS" } else { "/CURRENTUSER" };
+    let scope = if all_users {
+        "/ALLUSERS"
+    } else {
+        "/CURRENTUSER"
+    };
     let args = [
         "/VERYSILENT",
         "/SUPPRESSMSGBOXES",
@@ -264,7 +310,12 @@ fn powershell_command(
         dir_arg.as_str(),
         scope,
     ];
-    let arg_list = args.iter().copied().map(ps_quote).collect::<Vec<_>>().join(",");
+    let arg_list = args
+        .iter()
+        .copied()
+        .map(ps_quote)
+        .collect::<Vec<_>>()
+        .join(",");
     let verb = if elevate { " -Verb RunAs" } else { "" };
     format!(
         "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; Start-Process -FilePath {} -ArgumentList {arg_list}{verb}",
@@ -368,15 +419,6 @@ fn parse_sha256(digest: &str) -> Option<[u8; 32]> {
         *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
     }
     Some(out)
-}
-
-#[cfg(not(debug_assertions))]
-fn sha256(bytes: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let hash = Sha256::digest(bytes);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&hash);
-    out
 }
 
 /// Value of a string field on the object that directly contains it.
@@ -536,29 +578,36 @@ fn objects(array: &str) -> Vec<&str> {
     found
 }
 
+/// Copies the `ikterminal` entry of a `.tar.gz` to `out`, reading one block at a time.
 #[cfg(any(test, all(not(debug_assertions), not(windows))))]
-fn extract_ikterminal(gzip: &[u8]) -> std::io::Result<Vec<u8>> {
-    use flate2::read::GzDecoder;
-    let mut plain = Vec::new();
-    GzDecoder::new(gzip).read_to_end(&mut plain)?;
-    let mut offset = 0;
-    while offset + 512 <= plain.len() {
-        let header = &plain[offset..offset + 512];
+fn extract_ikterminal(gzip: impl Read, out: &mut impl Write) -> std::io::Result<()> {
+    let broken = || std::io::Error::other("アーカイブが壊れています");
+    let mut tar = flate2::read::GzDecoder::new(gzip);
+    let mut header = [0u8; 512];
+    loop {
+        match tar.read_exact(&mut header) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(error),
+        }
         if header.iter().all(|byte| *byte == 0) {
             break;
         }
-        let name = header_name(header);
-        let size = header_size(header)?;
+        let name = header_name(&header);
+        let size = header_size(&header)? as u64;
         let kind = header[156];
-        offset += 512;
-        let end = offset + size;
-        if end > plain.len() {
-            return Err(std::io::Error::other("アーカイブが壊れています"));
-        }
-        let data = &plain[offset..end];
-        offset = end.div_ceil(512) * 512;
         if (kind == b'0' || kind == 0) && (name == "ikterminal" || name.ends_with("/ikterminal")) {
-            return Ok(data.to_vec());
+            let copied = std::io::copy(&mut (&mut tar).take(size), out)?;
+            return if copied == size {
+                Ok(())
+            } else {
+                Err(broken())
+            };
+        }
+        let padded = size.div_ceil(512) * 512;
+        let skipped = std::io::copy(&mut (&mut tar).take(padded), &mut std::io::sink())?;
+        if skipped != padded {
+            return Err(broken());
         }
     }
     Err(std::io::Error::other("配布物に実行ファイルがありません"))
@@ -584,20 +633,26 @@ fn header_size(header: &[u8]) -> std::io::Result<usize> {
     usize::from_str_radix(text.trim(), 8).map_err(|_| std::io::Error::other("サイズが不正です"))
 }
 
+/// Writes the response body to `out`. Fails when it exceeds `limit` bytes.
 #[cfg(not(debug_assertions))]
-fn http_get(url: &str, accept: Option<&str>, limit: u64) -> Option<Vec<u8>> {
-    #[cfg(all(windows, not(debug_assertions)))]
+fn http_get(url: &str, accept: Option<&str>, limit: u64, out: &mut impl Write) -> Option<()> {
+    #[cfg(windows)]
     {
-        http_get_windows(url, accept, limit)
+        http_get_windows(url, accept, limit, out)
     }
     #[cfg(not(windows))]
     {
-        http_get_unix(url, accept, limit)
+        http_get_unix(url, accept, limit, out)
     }
 }
 
 #[cfg(all(windows, not(debug_assertions)))]
-fn http_get_windows(url: &str, accept: Option<&str>, limit: u64) -> Option<Vec<u8>> {
+fn http_get_windows(
+    url: &str,
+    accept: Option<&str>,
+    limit: u64,
+    out: &mut impl Write,
+) -> Option<()> {
     let parts = split_url(url)?;
     let agent = wide("IkTerminal");
     let verb = wide("GET");
@@ -671,7 +726,8 @@ fn http_get_windows(url: &str, accept: Option<&str>, limit: u64) -> Option<Vec<u
     if queried == 0 || status != 200 {
         return None;
     }
-    let mut body = Vec::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    let mut total = 0u64;
     loop {
         let mut available = 0u32;
         if unsafe { WinHttpQueryDataAvailable(request.0, &mut available) } == 0 {
@@ -680,18 +736,18 @@ fn http_get_windows(url: &str, accept: Option<&str>, limit: u64) -> Option<Vec<u
         if available == 0 {
             break;
         }
-        if body.len() as u64 + u64::from(available) > limit {
-            return None;
-        }
-        let mut chunk = vec![0u8; available as usize];
+        let want = (available as usize).min(chunk.len());
         let mut read = 0u32;
-        if unsafe { WinHttpReadData(request.0, chunk.as_mut_ptr(), available, &mut read) } == 0 {
+        if unsafe { WinHttpReadData(request.0, chunk.as_mut_ptr(), want as u32, &mut read) } == 0 {
             return None;
         }
-        chunk.truncate(read as usize);
-        body.extend_from_slice(&chunk);
+        total += u64::from(read);
+        if total > limit {
+            return None;
+        }
+        out.write_all(&chunk[..read as usize]).ok()?;
     }
-    Some(body)
+    Some(())
 }
 
 #[cfg(all(windows, not(debug_assertions)))]
@@ -804,7 +860,7 @@ unsafe extern "system" {
 }
 
 #[cfg(all(not(windows), not(debug_assertions)))]
-fn http_get_unix(url: &str, accept: Option<&str>, limit: u64) -> Option<Vec<u8>> {
+fn http_get_unix(url: &str, accept: Option<&str>, limit: u64, out: &mut impl Write) -> Option<()> {
     let agent = ureq::AgentBuilder::new()
         .https_only(true)
         .timeout(std::time::Duration::from_secs(30))
@@ -820,13 +876,8 @@ fn http_get_unix(url: &str, accept: Option<&str>, limit: u64) -> Option<Vec<u8>>
     if response.status() != 200 {
         return None;
     }
-    let mut body = Vec::new();
-    response
-        .into_reader()
-        .take(limit + 1)
-        .read_to_end(&mut body)
-        .ok()?;
-    (body.len() as u64 <= limit).then_some(body)
+    let copied = std::io::copy(&mut response.into_reader().take(limit + 1), out).ok()?;
+    (copied <= limit).then_some(())
 }
 
 #[cfg(test)]
@@ -879,7 +930,10 @@ mod tests {
             plain_path(Path::new(r"\\?\UNC\server\share\setup.exe")),
             r"\\server\share\setup.exe"
         );
-        assert_eq!(plain_path(Path::new(r"C:\Temp\setup.exe")), r"C:\Temp\setup.exe");
+        assert_eq!(
+            plain_path(Path::new(r"C:\Temp\setup.exe")),
+            r"C:\Temp\setup.exe"
+        );
     }
 
     #[cfg(windows)]
@@ -916,8 +970,6 @@ mod tests {
 
     #[test]
     fn archive_contains_the_binary() {
-        use std::io::Write;
-
         use flate2::Compression;
         use flate2::write::GzEncoder;
         let payload = b"#!/bin/ikterminal\n";
@@ -929,7 +981,9 @@ mod tests {
         let mut gzip = GzEncoder::new(Vec::new(), Compression::fast());
         gzip.write_all(&tar).unwrap();
         let compressed = gzip.finish().unwrap();
-        assert_eq!(extract_ikterminal(&compressed).unwrap(), payload);
+        let mut out = Vec::new();
+        extract_ikterminal(compressed.as_slice(), &mut out).unwrap();
+        assert_eq!(out, payload);
     }
 
     fn tar_header(name: &str, size: usize) -> [u8; 512] {

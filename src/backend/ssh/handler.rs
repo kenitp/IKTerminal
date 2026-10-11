@@ -42,10 +42,30 @@ impl client::Handler for Client {
         let fingerprint = key.fingerprint(HashAlg::Sha256);
         match keys::check_known_hosts(&self.host, self.port, &key) {
             Ok(true) => Ok(true),
-            Err(keys::Error::KeyChanged { line }) => Ok(self.reject(format!(
-                "{} のホスト鍵が known_hosts ({} 行目) と一致しません。中間者攻撃の可能性があります。\n受信した鍵: {fingerprint}",
-                self.host, line
-            ))),
+            Err(keys::Error::KeyChanged { line }) => {
+                let mismatch = format!(
+                    "{} のホスト鍵が known_hosts ({} 行目) と一致しません。中間者攻撃の可能性があります。\n受信した鍵: {fingerprint}",
+                    self.host, line
+                );
+                let message =
+                    format!("{mismatch}\n\nknown_hosts の登録を削除して、この鍵で接続しますか?");
+                let accepted = self
+                    .shared
+                    .ask(
+                        "ホスト鍵が変わっています".to_owned(),
+                        message,
+                        PromptKind::ReplaceHostKey,
+                    )
+                    .await
+                    .is_some();
+                if !accepted {
+                    return Ok(self.reject(mismatch));
+                }
+                if let Err(error) = super::known_hosts::replace(&self.host, self.port, &key) {
+                    return Ok(self.reject(format!("known_hosts を更新できません: {error}")));
+                }
+                Ok(true)
+            }
             _ => {
                 let message = format!(
                     "{}:{} は未登録のホストです。\n{} 鍵のフィンガープリント:\n{fingerprint}\n\n信頼して known_hosts に登録しますか?",
@@ -53,8 +73,11 @@ impl client::Handler for Client {
                     self.port,
                     key.algorithm()
                 );
-                let accepted =
-                    self.shared.ask("ホスト鍵の確認".to_owned(), message, PromptKind::Confirm).await.is_some();
+                let accepted = self
+                    .shared
+                    .ask("ホスト鍵の確認".to_owned(), message, PromptKind::Confirm)
+                    .await
+                    .is_some();
                 if !accepted {
                     return Ok(self.reject("ホスト鍵が承認されませんでした".to_owned()));
                 }

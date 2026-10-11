@@ -33,6 +33,22 @@ pub enum PromptKind {
     Secret,
     Text,
     Confirm,
+    /// Changed host key: remove the known_hosts entry and connect.
+    ReplaceHostKey,
+}
+
+impl PromptKind {
+    pub fn confirms(self) -> bool {
+        matches!(self, Self::Confirm | Self::ReplaceHostKey)
+    }
+
+    pub fn ok_label(self) -> &'static str {
+        match self {
+            Self::Confirm => "信頼して接続",
+            Self::ReplaceHostKey => "削除して接続",
+            Self::Secret | Self::Text => "OK",
+        }
+    }
 }
 
 /// A question from a backend to the user (password, host key, ...).

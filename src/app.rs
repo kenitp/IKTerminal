@@ -129,6 +129,7 @@ pub struct App {
 impl App {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
+        icon: Arc<egui::IconData>,
         directory: Option<PathBuf>,
         execute: Option<ShellSpec>,
         notice: Option<String>,
@@ -163,11 +164,7 @@ impl App {
             update: None,
             update_launched: false,
             update_check: None,
-            icon: Arc::new(egui::IconData {
-                rgba: include_bytes!("../assets/icon-64.rgba").to_vec(),
-                width: 64,
-                height: 64,
-            }),
+            icon,
             tray: None,
             hidden: false,
             quitting: false,
@@ -678,7 +675,7 @@ impl App {
 
     fn update_title(&mut self, ctx: &egui::Context, index: usize) {
         let title = match self.desks[index].sessions.get(self.desks[index].active) {
-            Some(session) => format!("{} - IkTerminal", session.tab_title()),
+            Some(session) => format!("{} - IkTerminal", session.tab_text().0),
             None => "IkTerminal".to_owned(),
         };
         if title != self.desks[index].window_title {
@@ -692,11 +689,14 @@ impl App {
         let tabs: Vec<TabInfo> = self.desks[index]
             .sessions
             .iter()
-            .map(|session| TabInfo {
-                id: session.id,
-                title: session.tab_title(),
-                tooltip: session.tab_tooltip(),
-                status: session.status(),
+            .map(|session| {
+                let (title, tooltip) = session.tab_text();
+                TabInfo {
+                    id: session.id,
+                    title,
+                    tooltip,
+                    status: session.status(),
+                }
             })
             .collect();
         let sftp_available = self.desks[index]

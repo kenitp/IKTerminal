@@ -31,7 +31,7 @@ impl PromptDialog {
             ui.add_space(4.0);
             ui.label(RichText::new(&prompt.message).color(theme::TEXT));
             ui.add_space(8.0);
-            let enter = if prompt.kind == PromptKind::Confirm {
+            let enter = if prompt.kind.confirms() {
                 false
             } else {
                 let edit = egui::TextEdit::singleline(&mut self.input)
@@ -42,12 +42,7 @@ impl PromptDialog {
             };
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let ok_label = if prompt.kind == PromptKind::Confirm {
-                    "信頼して接続"
-                } else {
-                    "OK"
-                };
-                if primary_button(ui, ok_label).clicked() || enter {
+                if primary_button(ui, prompt.kind.ok_label()).clicked() || enter {
                     answer = Some(Some(std::mem::take(&mut self.input)));
                 }
                 if ui.button("キャンセル").clicked()
