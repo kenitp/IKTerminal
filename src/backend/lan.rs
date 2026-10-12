@@ -2,14 +2,17 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
 use tokio::net::TcpStream;
 use tokio::task::JoinSet;
 
-const CONNECT_TIMEOUT: Duration = Duration::from_millis(800);
-const PARALLEL: usize = 64;
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
+const NAME_TIMEOUT: Duration = Duration::from_secs(3);
+/// Stays below the common Linux soft limit of 1024 open files.
+const PARALLEL: usize = 512;
 
 #[derive(Clone, Debug)]
 pub struct Device {
@@ -35,52 +38,93 @@ impl Device {
 
 enum Event {
     Found(Device),
+    Named(Ipv4Addr, String),
     Done,
+}
+
+#[derive(Default)]
+struct Progress {
+    /// Address most recently dispatched, as `u32`.
+    current: AtomicU32,
+    done: AtomicU32,
 }
 
 /// Scan results collected for the sidebar.
 #[derive(Default)]
 pub struct Scanner {
+    /// Kept after the probes finish until the last name lookup ends.
     rx: Option<Receiver<Event>>,
+    scanning: bool,
+    progress: Arc<Progress>,
+    total: u32,
     pub devices: Vec<Device>,
     pub message: Option<String>,
 }
 
 impl Scanner {
     pub fn scanning(&self) -> bool {
-        self.rx.is_some()
+        self.scanning
+    }
+
+    /// Address being probed, probes finished, and probes in total.
+    pub fn progress(&self) -> Option<(Ipv4Addr, u32, u32)> {
+        self.scanning().then(|| {
+            (
+                Ipv4Addr::from(self.progress.current.load(Ordering::Relaxed)),
+                self.progress.done.load(Ordering::Relaxed),
+                self.total,
+            )
+        })
     }
 
     pub fn start(&mut self, port: u16, wake: impl Fn() + Send + Sync + 'static) {
         self.devices.clear();
         self.message = None;
-        match local_ipv4() {
-            Ok(local) if scan_prefix(local).is_some() => {
-                self.rx = Some(spawn(local, port, Arc::new(wake)));
+        let local = match local_ipv4() {
+            Ok(local) => local,
+            Err(error) => {
+                self.message = Some(format!("スキャンできません: {error}"));
+                return;
             }
-            Ok(local) => {
-                self.message = Some(format!("{local} はスキャン対象外です"));
-            }
-            Err(error) => self.message = Some(format!("スキャンできません: {error}")),
+        };
+        self.total = targets(local).count() as u32;
+        if self.total == 0 {
+            self.message = Some(format!("{local} はスキャン対象外です"));
+            return;
         }
+        self.progress = Arc::default();
+        self.scanning = true;
+        self.rx = Some(spawn(local, port, self.progress.clone(), Arc::new(wake)));
     }
 
-    /// Takes finished results. Devices for which `keep` is false are skipped.
+    /// Takes new results. Devices for which `keep` is false are dropped.
     pub fn poll(&mut self, keep: impl Fn(&Device) -> bool) {
         let Some(rx) = &self.rx else { return };
-        while let Ok(event) = rx.try_recv() {
-            match event {
-                Event::Found(device) => {
+        loop {
+            match rx.try_recv() {
+                Ok(Event::Found(device)) => {
                     if keep(&device) {
                         let at = self.devices.partition_point(|d| d.addr < device.addr);
                         self.devices.insert(at, device);
                     }
                 }
-                Event::Done => {
-                    self.rx = None;
+                Ok(Event::Named(addr, name)) => {
+                    if let Some(at) = self.devices.iter().position(|d| d.addr == addr) {
+                        self.devices[at].name = Some(name);
+                        if !keep(&self.devices[at]) {
+                            self.devices.remove(at);
+                        }
+                    }
+                }
+                Ok(Event::Done) => {
+                    self.scanning = false;
                     if self.devices.is_empty() {
                         self.message = Some("未登録の機器は見つかりません".to_owned());
                     }
+                }
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    self.rx = None;
                     return;
                 }
             }
@@ -92,7 +136,12 @@ impl Scanner {
     }
 }
 
-fn spawn(local: Ipv4Addr, port: u16, wake: Arc<dyn Fn() + Send + Sync>) -> Receiver<Event> {
+fn spawn(
+    local: Ipv4Addr,
+    port: u16,
+    progress: Arc<Progress>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) -> Receiver<Event> {
     let (tx, rx) = mpsc::channel();
     super::runtime().spawn(async move {
         let mut addrs = targets(local);
@@ -101,8 +150,10 @@ fn spawn(local: Ipv4Addr, port: u16, wake: Arc<dyn Fn() + Send + Sync>) -> Recei
             while tasks.len() < PARALLEL
                 && let Some(addr) = addrs.next()
             {
+                progress.current.store(u32::from(addr), Ordering::Relaxed);
                 let tx = tx.clone();
                 let wake = wake.clone();
+                let progress = progress.clone();
                 tasks.spawn(async move {
                     let open = tokio::time::timeout(
                         CONNECT_TIMEOUT,
@@ -110,9 +161,15 @@ fn spawn(local: Ipv4Addr, port: u16, wake: Arc<dyn Fn() + Send + Sync>) -> Recei
                     )
                     .await
                     .is_ok_and(|r| r.is_ok());
+                    progress.done.fetch_add(1, Ordering::Relaxed);
                     if open {
-                        found(&tx, addr, port).await;
+                        let _ = tx.send(Event::Found(Device {
+                            addr,
+                            port,
+                            name: None,
+                        }));
                         wake();
+                        tokio::spawn(lookup(tx, wake, addr));
                     }
                 });
             }
@@ -126,12 +183,13 @@ fn spawn(local: Ipv4Addr, port: u16, wake: Arc<dyn Fn() + Send + Sync>) -> Recei
     rx
 }
 
-async fn found(tx: &Sender<Event>, addr: Ipv4Addr, port: u16) {
-    let name = tokio::task::spawn_blocking(move || reverse_name(addr))
-        .await
-        .ok()
-        .flatten();
-    let _ = tx.send(Event::Found(Device { addr, port, name }));
+/// The OS resolver may wait on NetBIOS or LLMNR for a long time, so the name is optional.
+async fn lookup(tx: Sender<Event>, wake: Arc<dyn Fn() + Send + Sync>, addr: Ipv4Addr) {
+    let resolve = tokio::task::spawn_blocking(move || reverse_name(addr));
+    if let Ok(Ok(Some(name))) = tokio::time::timeout(NAME_TIMEOUT, resolve).await {
+        let _ = tx.send(Event::Named(addr, name));
+        wake();
+    }
 }
 
 /// The address of the interface that holds the default route. No packet is sent.
@@ -144,25 +202,30 @@ fn local_ipv4() -> std::io::Result<Ipv4Addr> {
     }
 }
 
-/// `192.168.x.0/24` or `172.x.0.0/16`, with `x` taken from `local`.
-fn scan_prefix(local: Ipv4Addr) -> Option<(Ipv4Addr, u32)> {
+/// Third octets of `192.168.x.0/24` or `172.x.0.0/16` (`x` from `local`), nearest to `local` first.
+fn blocks(local: Ipv4Addr) -> Vec<u8> {
     match local.octets() {
-        [192, 168, third, _] => Some((Ipv4Addr::new(192, 168, third, 0), 24)),
-        [172, second, _, _] => Some((Ipv4Addr::new(172, second, 0, 0), 16)),
-        _ => None,
+        [192, 168, third, _] => vec![third],
+        [172, _, third, _] => {
+            let mut all: Vec<u8> = (0..=255).collect();
+            all.sort_by_key(|block| block.abs_diff(third));
+            all
+        }
+        _ => Vec::new(),
     }
 }
 
-/// Hosts in `scan_prefix`, without the network and broadcast addresses, and without `local`.
+/// Hosts in `blocks`, without the network and broadcast addresses, and without `local`.
 fn targets(local: Ipv4Addr) -> impl Iterator<Item = Ipv4Addr> {
-    scan_prefix(local)
+    let blocks = blocks(local);
+    let host_mask: u32 = if blocks.len() == 1 { 0xff } else { 0xffff };
+    let [a, b, _, _] = local.octets();
+    blocks
         .into_iter()
-        .flat_map(move |(base, prefix)| {
-            let start = u32::from(base);
-            let count = 1u32 << (32 - prefix);
-            (1..count - 1)
-                .map(move |offset| Ipv4Addr::from(start + offset))
-                .filter(move |addr| *addr != local)
+        .flat_map(move |third| (0..=255).map(move |last| Ipv4Addr::new(a, b, third, last)))
+        .filter(move |addr| {
+            let host = u32::from(*addr) & host_mask;
+            *addr != local && host != 0 && host != host_mask
         })
 }
 
@@ -275,9 +338,12 @@ mod tests {
         let local = Ipv4Addr::new(172, 24, 163, 106);
         let all: Vec<_> = targets(local).collect();
         assert_eq!(all.len(), (1 << 16) - 3);
-        assert_eq!(all[0], Ipv4Addr::new(172, 24, 0, 1));
-        assert_eq!(*all.last().unwrap(), Ipv4Addr::new(172, 24, 255, 254));
+        assert_eq!(all[0], Ipv4Addr::new(172, 24, 163, 0));
+        assert_eq!(all[255], Ipv4Addr::new(172, 24, 162, 0));
         assert!(!all.contains(&local));
+        assert!(!all.contains(&Ipv4Addr::new(172, 24, 0, 0)));
+        assert!(!all.contains(&Ipv4Addr::new(172, 24, 255, 255)));
+        assert!(all.contains(&Ipv4Addr::new(172, 24, 255, 254)));
         assert!(!all.contains(&Ipv4Addr::new(172, 0, 0, 1)));
 
         assert_eq!(targets(Ipv4Addr::new(10, 1, 2, 3)).count(), 0);

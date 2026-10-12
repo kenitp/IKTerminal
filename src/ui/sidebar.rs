@@ -135,6 +135,13 @@ fn lan_section(ui: &mut Ui, lan: &Lan, filter: &str) -> Option<SidebarAction> {
             }
         });
     });
+    if let Some((addr, done, total)) = lan.scanner.progress() {
+        ui.label(
+            egui::RichText::new(format!("{addr}  {done} / {total}"))
+                .size(10.5)
+                .color(theme::TEXT_DIM.gamma_multiply(0.7)),
+        );
+    }
     for device in &lan.scanner.devices {
         let label = device.label();
         let detail = if device.name.is_some() {

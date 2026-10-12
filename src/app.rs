@@ -248,10 +248,8 @@ impl App {
     }
 
     fn poll_lan(&mut self) {
-        if self.lan.scanning() {
-            let config = &self.ssh_config;
-            self.lan.poll(|device| !is_configured(config, device));
-        }
+        let config = &self.ssh_config;
+        self.lan.poll(|device| !is_configured(config, device));
     }
 
     /// Opens a session to a scanned device; the host is saved after it connects.
