@@ -1,7 +1,9 @@
 //! Read-only evaluation of OpenSSH config files (including `Include`),
 //! following the "first obtained value wins" rule.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use super::document::split_option;
@@ -167,7 +169,7 @@ impl SshConfig {
                 });
             }
         }
-        out.sort_by(|a, b| a.alias.cmp(&b.alias));
+        out.sort_by(|a, b| cmp_alias(&a.alias, &b.alias));
         out
     }
 
@@ -255,6 +257,14 @@ impl SshConfig {
                 .and_then(|v| v.parse().ok())
                 .filter(|v| *v > 0),
         }
+    }
+}
+
+/// IP aliases compare by address, so `192.168.1.5` stays before `192.168.1.120`.
+fn cmp_alias(left: &str, right: &str) -> Ordering {
+    match (left.parse::<IpAddr>(), right.parse::<IpAddr>()) {
+        (Ok(left), Ok(right)) => left.cmp(&right),
+        _ => left.cmp(right),
     }
 }
 
@@ -426,6 +436,13 @@ mod tests {
         let cfg = config("Host zeta\nHost Alpha\nHost mid\n");
         let names: Vec<_> = cfg.hosts().into_iter().map(|host| host.alias).collect();
         assert_eq!(names, ["alpha", "mid", "zeta"]);
+    }
+
+    #[test]
+    fn ip_aliases_sort_by_address() {
+        let cfg = config("Host 192.168.1.120\nHost 10.0.0.20\nHost 192.168.1.5\nHost nas\n");
+        let names: Vec<_> = cfg.hosts().into_iter().map(|host| host.alias).collect();
+        assert_eq!(names, ["10.0.0.20", "192.168.1.5", "192.168.1.120", "nas"]);
     }
 
     #[test]

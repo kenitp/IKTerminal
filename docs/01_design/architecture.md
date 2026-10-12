@@ -69,7 +69,7 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `backend/ssh/known_hosts.rs` | 変わったホスト鍵の行を除き、新しい鍵を足す |
 | `backend/ssh/auth.rs` | 認証の順序制御 (渡されたパスワードを最初に試す) |
 | `backend/sftp.rs` | `SftpClient`: 一覧、操作、転送 (再帰・進捗・中止) |
-| `sshconfig/resolve.rs` | `SshConfig`: Include / Host / Match all の解決。ホスト一覧はエイリアス名の昇順 |
+| `sshconfig/resolve.rs` | `SshConfig`: Include / Host / Match all の解決。ホスト一覧はエイリアス名の昇順。IP アドレスは数値順 |
 | `sshconfig/document.rs` | `Document`: 書式を保持した編集用モデル |
 | `sshconfig/command.rs` | シェル行から `ssh` コマンドを取り出し、接続成功後に config へ追記する。`rename_host` で IP のエイリアスを置き換える |
 | `ui/theme.rs` | 色定数と egui スタイル |
