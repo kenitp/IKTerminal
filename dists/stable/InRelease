@@ -8,19 +8,19 @@ Codename: stable
 Architectures: amd64
 Components: main
 Description: IkTerminal apt repository
-Date: Mon, 12 Oct 2026 13:49:16 +0000
+Date: Mon, 12 Oct 2026 14:43:47 +0000
 MD5Sum:
- 2e738df4ffec62b3c2680fe58a3cda57     5076 main/binary-amd64/Packages
- bc77fc38a1d234f410930691429049b4     1265 main/binary-amd64/Packages.gz
+ cd921f84b20e40ef2287279c479c2778     5640 main/binary-amd64/Packages
+ c73fabd12e03ccfa172882484c4336eb     1368 main/binary-amd64/Packages.gz
  19726b6a0706e77ffd0ed8cec58c66b3       89 main/binary-amd64/Release
 SHA256:
- a3d39e99a88946a727e5268d9e1f9ebac5eb1492f1894584177cb51be1313cb1     5076 main/binary-amd64/Packages
- f05bf5c08b949933f8b705977ee42de29b5be1ffe9134e3ef483293d42c6f434     1265 main/binary-amd64/Packages.gz
+ a869b9b55a24a64dca7a2e2b912c0706a80d82d8b95318ac364b55089a9da987     5640 main/binary-amd64/Packages
+ bb4e47b7871ce17ebb43dc5688e623f1414f88539b4fe64a042eaa7e2bacea1b     1368 main/binary-amd64/Packages.gz
  f57912a7f0c45bf654e62f2e384c7e6b5888c1edf7cbb8777df1e243da32106a       89 main/binary-amd64/Release
 -----BEGIN PGP SIGNATURE-----
 
-iHUEARYKAB0WIQQsryz3SN87sEn9EugLC9Mh6wpm0wUCaszlXAAKCRALC9Mh6wpm
-03skAQDqbMNW6h4AtKaAxYBuEpLqfwo+SxP1H4vZ615hpdzvHAD9FH6OG+WbcSuH
-GC1oFiJI804NUE4x1WXPW97QtTFLrww=
-=2Vr/
+iHUEARYKAB0WIQQsryz3SN87sEn9EugLC9Mh6wpm0wUCaszyIwAKCRALC9Mh6wpm
+00R4AP4vklH2y5ZJg9UUVzeMnFc7j95CRWRnTVkCVR+hKAZRUwEAgepVLNWrNR11
+7V9UmdKpAUx4xlwxzVLA3E6YUJaJ3AY=
+=Cjli
 -----END PGP SIGNATURE-----
