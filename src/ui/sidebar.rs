@@ -4,7 +4,7 @@ use egui::{Color32, Ui};
 
 use super::theme;
 use super::widgets::{flat_button, list_row, section_header};
-use crate::backend::lan::{Account, AuthState, Device, Scanner};
+use crate::backend::lan::{AuthState, Device, Scanner};
 use crate::backend::local::ShellSpec;
 use crate::sshconfig::HostEntry;
 
@@ -13,11 +13,8 @@ pub enum SidebarAction {
     Connect(String),
     EditConfig(Option<String>),
     Reload,
-    Scan(Option<Account>),
-    PickDevice {
-        device: Device,
-        account: Option<Account>,
-    },
+    Scan,
+    PickDevice(Device),
 }
 
 pub struct Lan<'a> {
@@ -29,11 +26,6 @@ pub struct Lan<'a> {
 pub struct Sidebar {
     filter: String,
     quick: String,
-    try_auth: bool,
-    auth_user: String,
-    auth_password: String,
-    /// Account from the latest scan that tried SSH authentication.
-    auth_used: Option<Account>,
 }
 
 impl Sidebar {
@@ -138,43 +130,13 @@ impl Sidebar {
                 if scanning {
                     ui.spinner();
                 } else if flat_button(ui, "スキャン")
-                    .on_hover_text("範囲を選び、ポートが開いている機器を探す")
+                    .on_hover_text("範囲と認証を選び、ポートが開いている機器を探す")
                     .clicked()
                 {
-                    let auth = self.auth_request();
-                    if auth.is_some() {
-                        self.auth_used = auth.clone();
-                    }
-                    action = Some(SidebarAction::Scan(auth));
+                    action = Some(SidebarAction::Scan);
                 }
             });
         });
-        ui.add_enabled_ui(!scanning, |ui| {
-            ui.checkbox(&mut self.try_auth, "SSH認証を試す")
-                .on_hover_text("見つかった機器に、指定したユーザーとパスワードで接続できるか試す");
-        });
-        if self.try_auth {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.auth_user)
-                    .hint_text("ユーザー")
-                    .desired_width(f32::INFINITY)
-                    .interactive(!scanning),
-            );
-            ui.add(
-                egui::TextEdit::singleline(&mut self.auth_password)
-                    .password(true)
-                    .hint_text("パスワード")
-                    .desired_width(f32::INFINITY)
-                    .interactive(!scanning),
-            );
-            if self.auth_user.trim().is_empty() {
-                ui.label(
-                    egui::RichText::new("ユーザーが空のときはポートの確認だけします")
-                        .size(10.5)
-                        .color(theme::TEXT_DIM),
-                );
-            }
-        }
         if let Some((addr, done, total)) = lan.scanner.progress() {
             ui.label(
                 egui::RichText::new(format!("{addr}  {done} / {total}"))
@@ -195,33 +157,13 @@ impl Sidebar {
                 .on_hover_text(device_hover(device))
                 .clicked()
             {
-                action = Some(SidebarAction::PickDevice {
-                    account: self.account_for(device),
-                    device: device.clone(),
-                });
+                action = Some(SidebarAction::PickDevice(device.clone()));
             }
         }
         if let Some(message) = &lan.scanner.message {
             ui.label(egui::RichText::new(message).color(theme::TEXT_DIM));
         }
         action
-    }
-
-    fn auth_request(&self) -> Option<Account> {
-        let user = self.auth_user.trim();
-        if !self.try_auth || user.is_empty() {
-            return None;
-        }
-        Some(Account {
-            user: user.to_owned(),
-            password: self.auth_password.clone(),
-        })
-    }
-
-    fn account_for(&self, device: &Device) -> Option<Account> {
-        let used = self.auth_used.as_ref()?;
-        let auth = device.auth.as_ref()?;
-        (auth.user == used.user).then(|| used.clone())
     }
 }
 

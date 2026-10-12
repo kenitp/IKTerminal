@@ -266,11 +266,17 @@ impl App {
         self.push_session(index, session);
     }
 
-    fn open_scan(&mut self, index: usize, auth: Option<Account>) {
+    /// The password from the last scan, when it matches this device's checked user.
+    fn account_for(&self, device: &Device) -> Option<Account> {
+        let used = self.scan_auth.as_ref()?;
+        let auth = device.auth.as_ref()?;
+        (auth.user == used.user).then(|| used.clone())
+    }
+
+    fn open_scan(&mut self, index: usize) {
         if self.lan.scanning() {
             return;
         }
-        self.scan_auth = auth;
         self.desks[index].scan = Some(ScanDialog::new(
             &netif::interfaces(),
             lan::local_ipv4().ok(),
@@ -283,12 +289,12 @@ impl App {
             return;
         };
         match dialog.show(ctx) {
-            Some(ScanResult::Start(range)) => {
+            Some(ScanResult::Start(range, auth)) => {
                 self.desks[index].scan = None;
                 self.scan_range = Some(range);
+                self.scan_auth = auth.clone();
                 if !self.lan.scanning() {
                     let wake = ctx.clone();
-                    let auth = self.scan_auth.clone();
                     self.lan.start(
                         range,
                         self.settings.scan_port,
@@ -1024,10 +1030,10 @@ impl App {
                         self.open_editor(index, focus.as_deref())
                     }
                     Some(SidebarAction::Reload) => self.reload_config(),
-                    Some(SidebarAction::Scan(auth)) => self.open_scan(index, auth),
-                    Some(SidebarAction::PickDevice { device, account }) => {
+                    Some(SidebarAction::Scan) => self.open_scan(index),
+                    Some(SidebarAction::PickDevice(device)) => {
                         let mut dialog = SshLoginDialog::new(&device);
-                        if let Some(account) = account {
+                        if let Some(account) = self.account_for(&device) {
                             dialog.prefill(&account.user, &account.password);
                         } else if let Some(auth) = &device.auth {
                             dialog.prefill(&auth.user, "");

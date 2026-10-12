@@ -6,14 +6,14 @@ use egui::RichText;
 
 use super::theme;
 use super::widgets::primary_button;
-use crate::backend::lan::Range;
+use crate::backend::lan::{Account, Range};
 use crate::backend::netif::Interface;
 
 /// Ranges with more hosts than this get a warning.
 const WIDE: u32 = 254;
 
 pub enum ScanResult {
-    Start(Range),
+    Start(Range, Option<Account>),
     Closed,
 }
 
@@ -31,6 +31,9 @@ pub struct ScanDialog {
     /// Index into `presets`; `presets.len()` is the typed range.
     choice: usize,
     custom: String,
+    try_auth: bool,
+    auth_user: String,
+    auth_password: String,
     error: Option<String>,
 }
 
@@ -71,8 +74,22 @@ impl ScanDialog {
             locals: interfaces.iter().map(|interface| interface.addr).collect(),
             choice,
             custom,
+            try_auth: false,
+            auth_user: String::new(),
+            auth_password: String::new(),
             error: None,
         }
+    }
+
+    fn account(&self) -> Option<Account> {
+        let user = self.auth_user.trim();
+        if !self.try_auth || user.is_empty() {
+            return None;
+        }
+        Some(Account {
+            user: user.to_owned(),
+            password: self.auth_password.clone(),
+        })
     }
 
     fn selected(&self) -> Result<(Range, Option<Ipv4Addr>), String> {
@@ -134,6 +151,29 @@ impl ScanDialog {
                     .color(theme::WARNING),
                 );
             }
+            ui.add_space(8.0);
+            ui.checkbox(&mut self.try_auth, "SSH認証を試す")
+                .on_hover_text("見つかった機器に、指定したユーザーとパスワードで接続できるか試す");
+            if self.try_auth {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.auth_user)
+                        .hint_text("ユーザー")
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.auth_password)
+                        .password(true)
+                        .hint_text("パスワード")
+                        .desired_width(f32::INFINITY),
+                );
+                if self.auth_user.trim().is_empty() {
+                    ui.label(
+                        RichText::new("ユーザーが空のときはポートの確認だけします")
+                            .size(10.5)
+                            .color(theme::TEXT_DIM),
+                    );
+                }
+            }
             if let Some(error) = &self.error {
                 ui.add_space(4.0);
                 ui.label(RichText::new(error).color(theme::DANGER));
@@ -144,7 +184,9 @@ impl ScanDialog {
                     || ui.input(|i| i.key_pressed(egui::Key::Enter))
                 {
                     match self.selected() {
-                        Ok((range, _)) => result = Some(ScanResult::Start(range)),
+                        Ok((range, _)) => {
+                            result = Some(ScanResult::Start(range, self.account()));
+                        }
                         Err(error) => self.error = Some(error),
                     }
                 }
