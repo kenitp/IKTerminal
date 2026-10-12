@@ -167,6 +167,7 @@ impl SshConfig {
                 });
             }
         }
+        out.sort_by(|a, b| a.alias.cmp(&b.alias));
         out
     }
 
@@ -418,6 +419,13 @@ mod tests {
         assert!(cfg.contains_target("10.0.0.1", Some("alice"), 2200));
         assert!(!cfg.contains_target("10.0.0.1", Some("carol"), 2200));
         assert!(!cfg.contains_target("other", None, 22));
+    }
+
+    #[test]
+    fn host_list_is_sorted_by_alias() {
+        let cfg = config("Host zeta\nHost Alpha\nHost mid\n");
+        let names: Vec<_> = cfg.hosts().into_iter().map(|host| host.alias).collect();
+        assert_eq!(names, ["alpha", "mid", "zeta"]);
     }
 
     #[test]

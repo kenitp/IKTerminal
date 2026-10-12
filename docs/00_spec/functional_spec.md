@@ -49,7 +49,7 @@ OS のタイトルバーは出さない。タブバーの空きをドラッグ�
 
 ### 4.1 OpenSSH config の読み込み
 
-- `~/.ssh/config` を読み込み、`Host` のエイリアス (ワイルドカードを含まないもの) をサイドバーに一覧表示する。
+- `~/.ssh/config` を読み込み、`Host` のエイリアス (ワイルドカードを含まないもの) をエイリアス名の昇順でサイドバーと新規タブの接続先に一覧表示する。
 - 対応キーワード: `Host` (`!` による否定を含む)、`Match all`、`Include` (glob 可)、`HostName`、`User`、`Port`、`IdentityFile`、`IdentitiesOnly`、`ProxyJump`、`ServerAliveInterval`、`ConnectTimeout`。
 - `Match all` 以外の `Match` 条件は評価せず、一致しないものとして扱う。
 - 値は最初に得られたものを採用する。`IdentityFile` のみ累積する。トークン `%d %u %h %r` と `~` を展開する。
