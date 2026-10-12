@@ -156,27 +156,33 @@ pub fn ssh_outcome(command_line: &str, screen: &str) -> SshOutcome {
     SshOutcome::Pending
 }
 
-/// Sets `HostName` to `hostname.local`. An IP alias becomes that hostname.
+/// Alias becomes `hostname.local`. `HostName` stays the IP used to connect.
 pub fn apply_connected_host(cmd: &mut SshCommand, host: &str) {
     let host = host.trim();
     if host.is_empty() {
         return;
     }
     if is_ip_host(host) {
-        if !is_ip_host(&cmd.destination) {
-            cmd.hostname = hostname_local(&cmd.destination);
+        if !is_ip_host(&cmd.hostname) {
+            cmd.hostname = bare_ip(host);
         }
         return;
     }
-    let short = short_host(host);
-    cmd.hostname = format!("{short}.local");
-    if is_ip_host(&cmd.destination) {
-        cmd.destination = short;
+    let ip = if is_ip_host(&cmd.hostname) {
+        Some(bare_ip(&cmd.hostname))
+    } else if is_ip_host(&cmd.destination) {
+        Some(bare_ip(&cmd.destination))
+    } else {
+        None
+    };
+    cmd.destination = format!("{}.local", short_host(host));
+    if let Some(ip) = ip {
+        cmd.hostname = ip;
     }
 }
 
-fn hostname_local(host: &str) -> String {
-    format!("{}.local", short_host(host))
+fn bare_ip(host: &str) -> String {
+    host.trim_matches(['[', ']']).to_owned()
 }
 
 fn short_host(host: &str) -> String {
@@ -640,17 +646,17 @@ mod tests {
     }
 
     #[test]
-    fn connected_host_uses_hostname_local() {
+    fn connected_alias_is_hostname_local_and_hostname_stays_ip() {
         let mut cmd = find_ssh_command("ssh pi@192.168.1.20").unwrap();
         apply_connected_host(&mut cmd, "raspberrypi");
-        assert_eq!(cmd.destination, "raspberrypi");
-        assert_eq!(cmd.hostname, "raspberrypi.local");
+        assert_eq!(cmd.destination, "raspberrypi.local");
+        assert_eq!(cmd.hostname, "192.168.1.20");
         assert_eq!(cmd.user.as_deref(), Some("pi"));
 
         let mut named = find_ssh_command("ssh pi").unwrap();
         apply_connected_host(&mut named, "raspberrypi.local");
-        assert_eq!(named.destination, "pi");
-        assert_eq!(named.hostname, "raspberrypi.local");
+        assert_eq!(named.destination, "raspberrypi.local");
+        assert_eq!(named.hostname, "pi");
 
         let mut only_ip = find_ssh_command("ssh 10.0.0.8").unwrap();
         apply_connected_host(&mut only_ip, "10.0.0.8");
@@ -660,6 +666,6 @@ mod tests {
         let mut short = find_ssh_command("ssh nas").unwrap();
         apply_connected_host(&mut short, "10.0.0.9");
         assert_eq!(short.destination, "nas");
-        assert_eq!(short.hostname, "nas.local");
+        assert_eq!(short.hostname, "10.0.0.9");
     }
 }
