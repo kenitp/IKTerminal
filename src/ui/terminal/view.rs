@@ -61,6 +61,14 @@ impl Grid {
         };
         (col, row, side)
     }
+
+    fn point_at(&self, offset: usize, pos: Pos2) -> (Point, Side) {
+        let (col, row, side) = self.cell_at(pos);
+        (
+            viewport_to_point(offset, Point::new(row, Column(col))),
+            side,
+        )
+    }
 }
 
 pub fn show(ui: &mut Ui, session: &mut Session, font: &TermFont, want_focus: bool) -> Output {
@@ -108,18 +116,27 @@ pub fn show(ui: &mut Ui, session: &mut Session, font: &TermFont, want_focus: boo
     let sgr = mode.contains(TermMode::SGR_MOUSE);
     let mut send: Vec<u8> = Vec::new();
     let mut typed = false;
+    let mut extend_selection = false;
 
     for event in &events {
         match event {
             Event::Text(text) if focused && (!modifiers.alt || modifiers.ctrl) => {
-                send.extend_from_slice(text.as_bytes());
-                typed = true;
+                if has_selection(&term) {
+                    extend_selection = true;
+                } else {
+                    send.extend_from_slice(text.as_bytes());
+                    typed = true;
+                }
             }
             Event::Ime(ImeEvent::Preedit { text, .. }) if focused => state.preedit = text.clone(),
             Event::Ime(ImeEvent::Commit(text)) if focused => {
                 state.preedit.clear();
-                send.extend_from_slice(text.as_bytes());
-                typed = true;
+                if has_selection(&term) {
+                    extend_selection = true;
+                } else {
+                    send.extend_from_slice(text.as_bytes());
+                    typed = true;
+                }
             }
             Event::Key {
                 key,
@@ -127,6 +144,10 @@ pub fn show(ui: &mut Ui, session: &mut Session, font: &TermFont, want_focus: boo
                 modifiers: m,
                 ..
             } if focused => {
+                if has_selection(&term) && extends_selection(*key, *m) {
+                    extend_selection = true;
+                    continue;
+                }
                 if *key == egui::Key::Enter && m.is_none() && !mode.contains(TermMode::ALT_SCREEN) {
                     let line = submitted_line(&term);
                     if session.wants_cursor(&line) {
@@ -296,27 +317,33 @@ pub fn show(ui: &mut Ui, session: &mut Session, font: &TermFont, want_focus: boo
     }
 
     if !mouse_mode {
-        let offset = term.grid().display_offset();
-        let to_point = |pos: Pos2| {
-            let (col, row, side) = grid.cell_at(pos);
-            (
-                viewport_to_point(offset, Point::new(row, Column(col))),
-                side,
-            )
-        };
         let follow_link = state.pending_url.is_some() || out.open_url.is_some();
         if !follow_link && let Some(pos) = response.interact_pointer_pos() {
-            let (point, side) = to_point(pos);
             if response.triple_clicked() {
+                let (point, side) = grid.point_at(term.grid().display_offset(), pos);
                 term.selection = Some(Selection::new(SelectionType::Lines, point, side));
             } else if response.double_clicked() {
+                let (point, side) = grid.point_at(term.grid().display_offset(), pos);
                 term.selection = Some(Selection::new(SelectionType::Semantic, point, side));
             } else if response.drag_started_by(PointerButton::Primary) {
-                let (start, start_side) = to_point(press_origin.unwrap_or(pos));
+                let offset = term.grid().display_offset();
+                let (start, start_side) = grid.point_at(offset, press_origin.unwrap_or(pos));
+                let (point, side) = grid.point_at(offset, pos);
                 let mut selection = Selection::new(SelectionType::Simple, start, start_side);
                 selection.update(point, side);
                 term.selection = Some(selection);
             } else if response.dragged_by(PointerButton::Primary) {
+                if term.selection.is_some() {
+                    let delta = selection_scroll(pos, &grid);
+                    if delta != 0 {
+                        let before = term.grid().display_offset();
+                        term.scroll_display(Scroll::Delta(delta));
+                        if term.grid().display_offset() != before {
+                            ui.ctx().request_repaint();
+                        }
+                    }
+                }
+                let (point, side) = grid.point_at(term.grid().display_offset(), pos);
                 if let Some(selection) = term.selection.as_mut() {
                     selection.update(point, side);
                 }
@@ -343,7 +370,9 @@ pub fn show(ui: &mut Ui, session: &mut Session, font: &TermFont, want_focus: boo
         }
     }
 
-    if typed {
+    if extend_selection && !typed {
+        extend_selection_to_bottom(&mut term);
+    } else if typed {
         term.selection = None;
         term.scroll_display(Scroll::Bottom);
     }
@@ -391,6 +420,70 @@ fn url_at(
     let (col, row, _) = grid.cell_at(pos);
     let point = viewport_to_point(term.grid().display_offset(), Point::new(row, Column(col)));
     super::link::at(term, point)
+}
+
+/// Lines to scroll while a drag is outside the grid. Positive moves into history.
+fn selection_scroll(pos: Pos2, grid: &Grid) -> i32 {
+    if grid.cell.y <= 0.0 {
+        return 0;
+    }
+    let top = grid.origin.y;
+    let bottom = grid.origin.y + grid.rows as f32 * grid.cell.y;
+    let lines = |distance: f32| ((distance / grid.cell.y).ceil() as i32).clamp(1, 3);
+    if pos.y < top {
+        lines(top - pos.y)
+    } else if pos.y >= bottom {
+        -lines(pos.y - bottom)
+    } else {
+        0
+    }
+}
+
+fn has_selection(term: &alacritty_terminal::Term<crate::terminal::Listener>) -> bool {
+    term.selection.as_ref().is_some_and(|s| !s.is_empty())
+}
+
+/// A key that should grow the selection to the bottom instead of being typed.
+fn extends_selection(key: egui::Key, modifiers: egui::Modifiers) -> bool {
+    if is_modifier_key(key) || is_clipboard_key(key, modifiers) {
+        return false;
+    }
+    let page = matches!(key, egui::Key::PageUp | egui::Key::PageDown);
+    !(page && modifiers.shift && !modifiers.ctrl)
+}
+
+fn is_modifier_key(key: egui::Key) -> bool {
+    matches!(
+        key,
+        egui::Key::ShiftLeft
+            | egui::Key::ShiftRight
+            | egui::Key::ControlLeft
+            | egui::Key::ControlRight
+            | egui::Key::AltLeft
+            | egui::Key::AltRight
+            | egui::Key::SuperLeft
+            | egui::Key::SuperRight
+    )
+}
+
+fn is_clipboard_key(key: egui::Key, modifiers: egui::Modifiers) -> bool {
+    (modifiers.command
+        && matches!(
+            key,
+            egui::Key::C | egui::Key::V | egui::Key::X | egui::Key::Insert
+        ))
+        || (modifiers.shift && matches!(key, egui::Key::Insert | egui::Key::Delete))
+}
+
+fn extend_selection_to_bottom(term: &mut alacritty_terminal::Term<crate::terminal::Listener>) {
+    let Some(range) = term.selection.as_ref().and_then(|s| s.to_range(term)) else {
+        return;
+    };
+    let end = Point::new(term.bottommost_line(), term.last_column());
+    let mut selection = Selection::new(SelectionType::Simple, range.start, Side::Left);
+    selection.update(end, Side::Right);
+    term.selection = Some(selection);
+    term.scroll_display(Scroll::Bottom);
 }
 
 fn line_above(term: &alacritty_terminal::Term<crate::terminal::Listener>) -> Option<String> {
@@ -473,4 +566,39 @@ fn paint_scroll_indicator(
         [Pos2::new(x, top), Pos2::new(x, top + height)],
         Stroke::new(4.0, theme::SURFACE_HOVER),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn grid() -> Grid {
+        Grid {
+            origin: Pos2::new(10.0, 100.0),
+            cell: Vec2::new(8.0, 16.0),
+            cols: 80,
+            rows: 24,
+        }
+    }
+
+    #[test]
+    fn drag_outside_scrolls_toward_the_pointer() {
+        let grid = grid();
+        assert!(selection_scroll(Pos2::new(20.0, 90.0), &grid) > 0);
+        assert!(selection_scroll(Pos2::new(20.0, 500.0), &grid) < 0);
+        assert_eq!(selection_scroll(Pos2::new(20.0, 120.0), &grid), 0);
+    }
+
+    #[test]
+    fn selection_keys_leave_clipboard_and_paging_alone() {
+        let none = egui::Modifiers::NONE;
+        assert!(extends_selection(egui::Key::End, none));
+        assert!(extends_selection(egui::Key::A, none));
+        assert!(!extends_selection(egui::Key::C, egui::Modifiers::COMMAND));
+        assert!(!extends_selection(
+            egui::Key::PageUp,
+            egui::Modifiers::SHIFT
+        ));
+        assert!(!extends_selection(egui::Key::ShiftLeft, none));
+    }
 }

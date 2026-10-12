@@ -109,6 +109,172 @@ pub fn find_ssh_command(line: &str) -> Option<SshCommand> {
     found
 }
 
+/// What the terminal showed after an `ssh` command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SshOutcome {
+    /// Still connecting, or waiting on a prompt.
+    Pending,
+    /// The command returned without a remote shell.
+    Failed,
+    /// Remote prompt. `host` is the name in that prompt.
+    Connected { host: String },
+}
+
+/// Reads the screen after `command_line` and decides whether `ssh` logged in.
+pub fn ssh_outcome(command_line: &str, screen: &str) -> SshOutcome {
+    let Some(after) = output_after(command_line, screen) else {
+        return SshOutcome::Pending;
+    };
+    if after.trim().is_empty() {
+        return SshOutcome::Pending;
+    }
+    let lower = after.to_ascii_lowercase();
+    if SSH_FAILURES.iter().any(|mark| lower.contains(mark)) {
+        return SshOutcome::Failed;
+    }
+    let local = local_prompt(command_line);
+    let lines: Vec<&str> = after
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let Some(last) = lines.last().copied() else {
+        return SshOutcome::Pending;
+    };
+    if !local.is_empty() && last == local {
+        return SshOutcome::Failed;
+    }
+    for line in lines.iter().rev() {
+        if let Some(host) = remote_host(line)
+            && (local.is_empty() || *line != local)
+        {
+            return SshOutcome::Connected {
+                host: host.to_owned(),
+            };
+        }
+    }
+    SshOutcome::Pending
+}
+
+/// Sets `HostName` to `hostname.local`. An IP alias becomes that hostname.
+pub fn apply_connected_host(cmd: &mut SshCommand, host: &str) {
+    let host = host.trim();
+    if host.is_empty() {
+        return;
+    }
+    if is_ip_host(host) {
+        if !is_ip_host(&cmd.destination) {
+            cmd.hostname = hostname_local(&cmd.destination);
+        }
+        return;
+    }
+    let short = short_host(host);
+    cmd.hostname = format!("{short}.local");
+    if is_ip_host(&cmd.destination) {
+        cmd.destination = short;
+    }
+}
+
+fn hostname_local(host: &str) -> String {
+    format!("{}.local", short_host(host))
+}
+
+fn short_host(host: &str) -> String {
+    host.split('.')
+        .next()
+        .filter(|label| !label.is_empty())
+        .unwrap_or(host)
+        .to_owned()
+}
+
+fn is_ip_host(host: &str) -> bool {
+    host.trim_matches(['[', ']'])
+        .parse::<std::net::IpAddr>()
+        .is_ok()
+}
+
+const SSH_FAILURES: &[&str] = &[
+    "permission denied",
+    "connection refused",
+    "connection timed out",
+    "connection timeout",
+    "operation timed out",
+    "could not resolve",
+    "name or service not known",
+    "no route to host",
+    "network is unreachable",
+    "host key verification failed",
+    "remote host identification has changed",
+    "connection closed",
+    "connection reset",
+    "kex_exchange_identification",
+    "too many authentication failures",
+    "no matching host key",
+];
+
+fn local_prompt(line: &str) -> &str {
+    let tokens = tokenize(line);
+    let mut from = 0;
+    for token in &tokens {
+        let Some(rel) = line[from..].find(token.as_str()) else {
+            break;
+        };
+        let at = from + rel;
+        if is_ssh_program(token) {
+            return line[..at].trim();
+        }
+        from = at + token.len();
+    }
+    ""
+}
+
+fn remote_host(line: &str) -> Option<&str> {
+    let line = line.trim().strip_prefix('[').unwrap_or(line.trim());
+    let (user, rest) = line.split_once('@')?;
+    if user.is_empty() || user.chars().any(|c| c.is_whitespace() || c == '/') {
+        return None;
+    }
+    let end = line.chars().rev().find(|c| !c.is_whitespace())?;
+    if !matches!(end, '$' | '#' | '%' | '>') {
+        return None;
+    }
+    let host = rest
+        .split([':', ' ', ']'])
+        .next()
+        .filter(|host| !host.is_empty())?;
+    if host.chars().any(|c| c.is_whitespace() || c == '/') {
+        None
+    } else {
+        Some(host)
+    }
+}
+
+/// Text that follows the command, including when the grid wrapped it.
+fn output_after<'a>(command_line: &str, screen: &'a str) -> Option<&'a str> {
+    let needle = command_line.trim();
+    if needle.is_empty() {
+        return None;
+    }
+    if let Some(index) = screen.rfind(needle) {
+        return Some(&screen[index + needle.len()..]);
+    }
+    let mut stripped = String::new();
+    let mut origins = Vec::new();
+    for (index, ch) in screen.char_indices() {
+        if ch == '\n' || ch == '\r' {
+            continue;
+        }
+        stripped.push(ch);
+        while origins.len() < stripped.len() {
+            origins.push(index);
+        }
+    }
+    let at = stripped.rfind(needle)?;
+    let next = at + needle.len();
+    let start = origins.get(next).copied().unwrap_or(screen.len());
+    Some(&screen[start..])
+}
+
 /// Inserts or updates a host block in `~/.ssh/config` and rewrites the file.
 pub fn save_host(draft: &HostDraft) -> Result<(), String> {
     draft.validate()?;
@@ -441,5 +607,59 @@ mod tests {
         let cmd = find_ssh_command("ssh -p 2200 -- -odd-host").unwrap();
         assert_eq!(cmd.destination, "-odd-host");
         assert_eq!(cmd.port, Some(2200));
+    }
+
+    #[test]
+    fn config_waits_until_the_remote_prompt() {
+        let line = "kenichi@desktop:~$ ssh pi@192.168.1.20";
+        let password = format!("{line}\npi@192.168.1.20's password:");
+        assert_eq!(ssh_outcome(line, &password), SshOutcome::Pending);
+        let hostkey =
+            format!("{line}\nAre you sure you want to continue connecting (yes/no/[fingerprint])?");
+        assert_eq!(ssh_outcome(line, &hostkey), SshOutcome::Pending);
+        let ok = format!("{line}\nLast login: Mon Oct 12\npi@raspberrypi:~$ ");
+        assert_eq!(
+            ssh_outcome(line, &ok),
+            SshOutcome::Connected {
+                host: "raspberrypi".to_owned()
+            }
+        );
+        let wrapped = "kenichi@desktop:~$ ssh pi@\nlab\npi@raspberrypi:~$";
+        assert_eq!(
+            ssh_outcome("kenichi@desktop:~$ ssh pi@lab", wrapped),
+            SshOutcome::Connected {
+                host: "raspberrypi".to_owned()
+            }
+        );
+        let refused = format!(
+            "{line}\nssh: connect to host 192.168.1.20 port 22: Connection refused\nkenichi@desktop:~$"
+        );
+        assert_eq!(ssh_outcome(line, &refused), SshOutcome::Failed);
+        let back = format!("{line}\nkenichi@desktop:~$");
+        assert_eq!(ssh_outcome(line, &back), SshOutcome::Failed);
+    }
+
+    #[test]
+    fn connected_host_uses_hostname_local() {
+        let mut cmd = find_ssh_command("ssh pi@192.168.1.20").unwrap();
+        apply_connected_host(&mut cmd, "raspberrypi");
+        assert_eq!(cmd.destination, "raspberrypi");
+        assert_eq!(cmd.hostname, "raspberrypi.local");
+        assert_eq!(cmd.user.as_deref(), Some("pi"));
+
+        let mut named = find_ssh_command("ssh pi").unwrap();
+        apply_connected_host(&mut named, "raspberrypi.local");
+        assert_eq!(named.destination, "pi");
+        assert_eq!(named.hostname, "raspberrypi.local");
+
+        let mut only_ip = find_ssh_command("ssh 10.0.0.8").unwrap();
+        apply_connected_host(&mut only_ip, "10.0.0.8");
+        assert_eq!(only_ip.destination, "10.0.0.8");
+        assert_eq!(only_ip.hostname, "10.0.0.8");
+
+        let mut short = find_ssh_command("ssh nas").unwrap();
+        apply_connected_host(&mut short, "10.0.0.9");
+        assert_eq!(short.destination, "nas");
+        assert_eq!(short.hostname, "nas.local");
     }
 }

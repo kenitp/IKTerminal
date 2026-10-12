@@ -56,10 +56,19 @@ const CLOSE_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::
 const PREV_TAB: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::CTRL.plus(Modifiers::SHIFT), Key::Tab);
 const NEXT_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::Tab);
+const SSH_SAVE_WAIT: Duration = Duration::from_secs(180);
 
 struct Spawn {
     pos: Option<egui::Pos2>,
     size: egui::Vec2,
+}
+
+#[derive(Clone)]
+struct PendingSsh {
+    session: u64,
+    line: String,
+    cmd: SshCommand,
+    at: Instant,
 }
 
 struct Desk {
@@ -74,6 +83,7 @@ struct Desk {
     prompt: PromptDialog,
     ssh_save: Option<SshSaveDialog>,
     login: Option<SshLoginDialog>,
+    pending_ssh: Option<PendingSsh>,
     notice: Option<String>,
     focus_terminal: bool,
     new_tab_menu: bool,
@@ -98,6 +108,7 @@ impl Desk {
             prompt: PromptDialog::default(),
             ssh_save: None,
             login: None,
+            pending_ssh: None,
             notice,
             focus_terminal: true,
             new_tab_menu: false,
@@ -1101,6 +1112,13 @@ impl App {
         if self.desks[index].ssh_save.is_some() {
             return;
         }
+        let Some(session) = self.desks[index]
+            .sessions
+            .get(self.desks[index].active)
+            .map(|session| session.id)
+        else {
+            return;
+        };
         let Some(cmd) = sshconfig::find_ssh_command(line) else {
             return;
         };
@@ -1114,7 +1132,58 @@ impl App {
         if self.ssh_dismissed.contains(&dismiss_key(&cmd)) {
             return;
         }
-        self.desks[index].ssh_save = Some(SshSaveDialog::new(&cmd));
+        self.desks[index].pending_ssh = Some(PendingSsh {
+            session,
+            line: line.to_owned(),
+            cmd,
+            at: Instant::now(),
+        });
+    }
+
+    fn poll_ssh_save(&mut self, index: usize) {
+        if self.desks[index].ssh_save.is_some() {
+            return;
+        }
+        let Some(pending) = self.desks[index].pending_ssh.clone() else {
+            return;
+        };
+        if pending.at.elapsed() > SSH_SAVE_WAIT {
+            self.desks[index].pending_ssh = None;
+            return;
+        }
+        let screen = {
+            let Some(session) = self.desks[index]
+                .sessions
+                .iter()
+                .find(|session| session.id == pending.session)
+            else {
+                self.desks[index].pending_ssh = None;
+                return;
+            };
+            session.screen_tail(200)
+        };
+        match sshconfig::ssh_outcome(&pending.line, &screen) {
+            sshconfig::SshOutcome::Pending => {}
+            sshconfig::SshOutcome::Failed => self.desks[index].pending_ssh = None,
+            sshconfig::SshOutcome::Connected { host } => {
+                self.desks[index].pending_ssh = None;
+                let mut cmd = pending.cmd;
+                sshconfig::apply_connected_host(&mut cmd, &host);
+                let port = cmd.port.unwrap_or(22);
+                let known =
+                    self.ssh_config
+                        .contains_target(&cmd.destination, cmd.user.as_deref(), port)
+                        || self.ssh_config.contains_target(
+                            &cmd.hostname,
+                            cmd.user.as_deref(),
+                            port,
+                        );
+                if known || self.ssh_dismissed.contains(&dismiss_key(&cmd)) {
+                    return;
+                }
+                self.desks[index].ssh_save = Some(SshSaveDialog::new(&cmd));
+            }
+        }
     }
 
     fn ssh_save_dialog(&mut self, ctx: &egui::Context, index: usize) {
@@ -1221,6 +1290,7 @@ impl App {
         self.side_panel(ui, index);
         self.sftp_panel(ui, index);
         self.central(ui, index, dialogs_open);
+        self.poll_ssh_save(index);
         self.dialogs(&ctx, index);
         chrome::resize_borders(ui);
         self.update_title(&ctx, index);

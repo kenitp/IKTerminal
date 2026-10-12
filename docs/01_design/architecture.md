@@ -70,7 +70,7 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `backend/sftp.rs` | `SftpClient`: 一覧、操作、転送 (再帰・進捗・中止) |
 | `sshconfig/resolve.rs` | `SshConfig`: Include / Host / Match all の解決、ホスト一覧 |
 | `sshconfig/document.rs` | `Document`: 書式を保持した編集用モデル |
-| `sshconfig/command.rs` | シェル行から `ssh` コマンドを取り出し、config へ追記する |
+| `sshconfig/command.rs` | シェル行から `ssh` コマンドを取り出し、接続成功後に config へ追記する |
 | `ui/theme.rs` | 色定数と egui スタイル |
 | `ui/fonts.rs` | システムフォントの mmap 読み込み、`TermFont` (セル寸法) |
 | `ui/widgets.rs` | 共通ウィジェット |
@@ -79,7 +79,7 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `ui/ssh_save_dialog.rs` | `ssh` コマンドを config に追加するか尋ねるダイアログ |
 | `ui/ssh_login_dialog.rs` | LAN スキャンで選んだ機器のエイリアス、ユーザー、パスワード入力 |
 | `ui/serial_dialog.rs` | COM ポートとボーレートの選択 |
-| `ui/terminal/view.rs` | 端末ウィジェット: 入力、選択、スクロール、IME |
+| `ui/terminal/view.rs` | 端末ウィジェット: 入力、選択、選択中のスクロール、IME |
 | `ui/terminal/link.rs` | 表示セル上の `http://` / `https://` |
 | `browser.rs` | http(s) URL を OS のブラウザで開く。`app` だけが使う |
 | `ui/terminal/render.rs` | グリッド描画 (背景、文字、装飾、カーソル、変換中文字列) |
@@ -149,7 +149,8 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 - **更新**: リリースビルドだけが起動後、および設定の「更新を確認」で最新 Release を見る。確認とダウンロードは UI スレッドの外で行う。配布物はメモリに溜めず、ハッシュを計算しながら一時フォルダへ書き出す。Linux の tar.gz もブロック単位で読み、`ikterminal` だけを取り出す。GitHub が付ける SHA-256 と照合してから、`Ver.Up` を押したときに適用し、アプリを終了する。終了しただけでは更新しない。Windows の取得は WinHTTP、Linux は rustls である。Windows は `SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe` を起動し、プロセス終了後にサイレントインストーラを実行する。`/DIR` は実行ファイルのフォルダ。全ユーザー向けは `/ALLUSERS`、ユーザー向けは `/CURRENTUSER`。フォルダへ書き込めないときだけ `RunAs` で昇格する。渡すパスは通常の Win32 パスにする。Linux は実行中のバイナリを置き換える。ウィンドウを隠しているときに更新があれば、トレイのツールチップにバージョンを出す。
 - **起動フォルダ**: 引数があるときだけ作業ディレクトリにする。スタートメニュー起動時のカレントフォルダ (System32 など) は使わない。
 - **タブのフォルダ名**: ローカルシェルのプロセスから作業ディレクトリを読む。UI は約 0.5 秒ごとに `session` 経由で取得し、`フォルダ · シェル名` とフルパスのホバーを描く。SSH とシリアルは対象外。WSL の Linux 側ディレクトリは読まない。
-- **`ssh` の検出**: Enter の時点でカーソル行 (折り返しを含む) を読み、コマンド位置の `ssh` だけを解釈する。保存は `Document` 経由で、他の行を崩さない。
+- **選択の追従**: ドラッグ位置がグリッドの上下にはみ出すと、はみ出し量に応じて表示をスクロールし、選択端をそのセルへ更新する。選択がある状態で文字キーや移動キーを押すと、選択をバッファの最終行まで広げて最下部を表示する。そのキーはシェルへ送らない。コピー、貼り付け、切り取り、Shift+PageUp / PageDown は送る。
+- **`ssh` の検出**: Enter の時点でカーソル行 (折り返しを含む) を読み、コマンド位置の `ssh` だけを解釈して保留する。その後の画面でリモートプロンプト (`user@host:~$`) を見たら追加を尋ね、`HostName` はプロンプトのホスト名に `.local` を付けた値にする。接続先が IP のときはエイリアスもそのホスト名にする。失敗文言か、元のプロンプトへの復帰では破棄する。保存は `Document` 経由で、他の行を崩さない。
 - **Bitwarden**: 設定が有効なときだけ、SSH 接続の直前にプロセスを確認する。未起動なら、インストーラ版は `Bitwarden.exe`、Microsoft Store 版は `shell:AppsFolder` のアプリ ID で起動し、`openssh-ssh-agent` のパイプを待ってから認証する。
 - **シリアル**: ポートの開閉は UI ではなく `backend::serial` が行う。失敗はダイアログに返し、成功したらタブを追加する。
 - **タスクトレイ**: 設定が有効なときだけアイコンを出す。閉じる要求は取り消し、ウィンドウを隠す。アイコンの操作は egui の再描画を起こしてから UI スレッドで処理する。「終了」はプロセスを終わらせる。更新は `Ver.Up` で行う。Linux は KSNI (D-Bus) で、GTK はリンクしない。

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::Term;
 use alacritty_terminal::event::WindowSize;
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Config;
 
@@ -227,6 +228,35 @@ impl Session {
 
     pub fn write(&self, data: impl Into<Cow<'static, [u8]>>) {
         self.shared.write(data.into());
+    }
+
+    /// Recent rows, oldest first. Wrapped rows stay on their own lines.
+    pub fn screen_tail(&self, lines: usize) -> String {
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::term::cell::Flags;
+        let term = self.term.lock();
+        let grid = term.grid();
+        let cols = grid.columns();
+        if cols == 0 || lines == 0 {
+            return String::new();
+        }
+        let end = grid.bottommost_line().0.max(grid.cursor.point.line.0);
+        let start = (end - lines as i32 + 1).max(grid.topmost_line().0);
+        let mut text = String::new();
+        for index in start..=end {
+            if index != start {
+                text.push('\n');
+            }
+            let mut row = String::new();
+            for col in 0..cols {
+                let cell = &grid[Line(index)][Column(col)];
+                if !cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    row.push(cell.c);
+                }
+            }
+            text.push_str(row.trim_end());
+        }
+        text
     }
 
     /// Applies a new grid size to both the emulator and the backend.
