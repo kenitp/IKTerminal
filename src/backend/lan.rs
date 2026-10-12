@@ -8,11 +8,14 @@ use std::time::Duration;
 
 use tokio::net::TcpStream;
 use tokio::task::JoinSet;
+use tokio::time::MissedTickBehavior;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
 const NAME_TIMEOUT: Duration = Duration::from_secs(3);
-/// Stays below the common Linux soft limit of 1024 open files.
-const PARALLEL: usize = 512;
+/// Bursts of SYNs and ARP requests can make routers, VPNs, or IDS drop other connections.
+const PARALLEL: usize = 64;
+/// At most 200 probes per second.
+const PROBE_INTERVAL: Duration = Duration::from_millis(5);
 
 #[derive(Clone, Debug)]
 pub struct Device {
@@ -146,10 +149,13 @@ fn spawn(
     super::runtime().spawn(async move {
         let mut addrs = targets(local);
         let mut tasks = JoinSet::new();
+        let mut pace = tokio::time::interval(PROBE_INTERVAL);
+        pace.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             while tasks.len() < PARALLEL
                 && let Some(addr) = addrs.next()
             {
+                pace.tick().await;
                 progress.current.store(u32::from(addr), Ordering::Relaxed);
                 let tx = tx.clone();
                 let wake = wake.clone();
