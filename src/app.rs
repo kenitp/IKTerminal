@@ -11,7 +11,7 @@ use egui::{
     ViewportCommand, ViewportId,
 };
 
-use crate::backend::lan::{self as lan, Device, Range, Scanner};
+use crate::backend::lan::{self as lan, Account, Device, Range, Scanner};
 use crate::backend::local::{self, ShellSpec};
 use crate::backend::netif;
 use crate::cursor;
@@ -158,6 +158,7 @@ pub struct App {
     pending_cursor: Option<PendingCursor>,
     lan: Scanner,
     scan_range: Option<Range>,
+    scan_auth: Option<Account>,
     pending_saves: Vec<PendingSave>,
 }
 
@@ -208,6 +209,7 @@ impl App {
             pending_cursor: None,
             lan: Scanner::default(),
             scan_range: None,
+            scan_auth: None,
             pending_saves: Vec::new(),
         };
         let shell = execute.or_else(|| app.default_shell());
@@ -264,10 +266,11 @@ impl App {
         self.push_session(index, session);
     }
 
-    fn open_scan(&mut self, index: usize) {
+    fn open_scan(&mut self, index: usize, auth: Option<Account>) {
         if self.lan.scanning() {
             return;
         }
+        self.scan_auth = auth;
         self.desks[index].scan = Some(ScanDialog::new(
             &netif::interfaces(),
             lan::local_ipv4().ok(),
@@ -285,10 +288,12 @@ impl App {
                 self.scan_range = Some(range);
                 if !self.lan.scanning() {
                     let wake = ctx.clone();
+                    let auth = self.scan_auth.clone();
                     self.lan.start(
                         range,
                         self.settings.scan_port,
                         self.settings.scan_names,
+                        auth,
                         move || wake.request_repaint(),
                     );
                 }
@@ -1019,9 +1024,15 @@ impl App {
                         self.open_editor(index, focus.as_deref())
                     }
                     Some(SidebarAction::Reload) => self.reload_config(),
-                    Some(SidebarAction::Scan) => self.open_scan(index),
-                    Some(SidebarAction::PickDevice(device)) => {
-                        self.desks[index].login = Some(SshLoginDialog::new(&device));
+                    Some(SidebarAction::Scan(auth)) => self.open_scan(index, auth),
+                    Some(SidebarAction::PickDevice { device, account }) => {
+                        let mut dialog = SshLoginDialog::new(&device);
+                        if let Some(account) = account {
+                            dialog.prefill(&account.user, &account.password);
+                        } else if let Some(auth) = &device.auth {
+                            dialog.prefill(&auth.user, "");
+                        }
+                        self.desks[index].login = Some(dialog);
                     }
                     None => {}
                 }

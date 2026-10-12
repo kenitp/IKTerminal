@@ -41,6 +41,11 @@ impl SshLoginDialog {
         }
     }
 
+    pub fn prefill(&mut self, user: &str, password: &str) {
+        self.user = user.to_owned();
+        self.password = password.to_owned();
+    }
+
     pub fn set_error(&mut self, error: String) {
         self.error = Some(error);
     }
@@ -70,18 +75,22 @@ impl SshLoginDialog {
                     ui.label("ユーザー");
                     let user =
                         ui.add(egui::TextEdit::singleline(&mut self.user).desired_width(width));
-                    if !self.focused {
-                        user.request_focus();
-                        self.focused = true;
-                    }
                     ui.end_row();
                     ui.label("パスワード");
-                    ui.add(
+                    let password = ui.add(
                         egui::TextEdit::singleline(&mut self.password)
                             .password(true)
                             .hint_text("鍵で認証する場合は空")
                             .desired_width(width),
                     );
+                    if !self.focused {
+                        if self.user.is_empty() {
+                            user.request_focus();
+                        } else {
+                            password.request_focus();
+                        }
+                        self.focused = true;
+                    }
                     ui.end_row();
                 });
             ui.label(

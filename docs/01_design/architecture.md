@@ -63,11 +63,12 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `backend/serial.rs` | COM ポートの列挙と、8N1 でのバイト転送 |
 | `backend/bitwarden.rs` | SSH 前に Bitwarden デスクトップが止まっていれば起動する |
 | `backend/netif.rs` | NIC の IPv4 アドレスとプレフィックス長 (Windows は `GetIpAddrTable` と `ConvertInterfaceLuidToAlias`、Linux は `getifaddrs`)。停止中とループバックは除く |
-| `backend/lan.rs` | `Range`: プライベートの `/16` から `/30`。`Scanner`: その範囲のポート開放スキャンと逆引き (Windows は `GetNameInfoW`、Linux は `getnameinfo`) |
+| `backend/lan.rs` | `Range`: プライベートの `/16` から `/30`。`Scanner`: その範囲のポート開放スキャン、任意のパスワード認証確認、逆引き (Windows は `GetNameInfoW`、Linux は `getnameinfo`) |
 | `backend/ssh/mod.rs` | 接続 (ProxyJump の連鎖)、シェルチャネルの入出力ループ |
 | `backend/ssh/handler.rs` | ホスト鍵検証 (known_hosts) |
 | `backend/ssh/known_hosts.rs` | 変わったホスト鍵の行を除き、新しい鍵を足す |
 | `backend/ssh/auth.rs` | 認証の順序制御 (渡されたパスワードを最初に試す) |
+| `backend/ssh/probe.rs` | パスワードだけでログインできるかの確認。シェルは開かず、`known_hosts` は変えない |
 | `backend/sftp.rs` | `SftpClient`: 一覧、操作、転送 (再帰・進捗・中止) |
 | `sshconfig/resolve.rs` | `SshConfig`: Include / Host / Match all の解決。ホスト一覧はエイリアス名の昇順。IP アドレスは数値順 |
 | `sshconfig/document.rs` | `Document`: 書式を保持した編集用モデル |
@@ -123,11 +124,11 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 
 ### 4.4 LAN スキャン
 
-1. 「スキャン」で `app` が `netif::interfaces` で NIC ごとの IPv4 とプレフィックス長を読み、`lan::local_ipv4` (UDP ソケットを既定ルートへ `connect` するだけで送信はしない) で既定ルートのアドレスを得て、`ui::scan_dialog` を開く。NIC ごとの候補は `Range::for_interface` が作る。入力は `Range::parse` で検証する。選んだ範囲は `app` が覚え、次に開いたときの既定にする。
-2. `Scanner::start(range, ...)` が、`range` に含まれる自分のアドレスを `netif::interfaces` から探して除き、tokio タスクで各アドレスへ TCP 接続を試す。`/24` より広い範囲は、自分を含む `/24` に近い順に並べる。同時に走らせるのは 64 台まで、試行の開始は `tokio::time::interval` で 5 ms 間隔 (毎秒 200 件) に抑え、1 台 0.3 秒で打ち切る。SYN と ARP の集中で、ルーターや VPN、侵入検知が RDP など他の通信を切らないようにするためである。自分のアドレスは除く。直近に投げたアドレスと完了数は atomic に書き、サイドバーが毎フレーム読む。
-3. 開いていたアドレスはすぐ mpsc で `app` に渡し、再描画を要求する。逆引きは設定 `scan_names` が有効なときだけ、別タスクの `spawn_blocking` で行い、3 秒以内に分かった名前だけを後から送る。OS の逆引きは NetBIOS などで長く待つことがあるため、スキャンの完了は逆引きを待たない。受信側はスキャン完了後も、最後の逆引きが終わるまでチャネルを読む。
+1. 「スキャン」で `app` が `netif::interfaces` で NIC ごとの IPv4 とプレフィックス長を読み、`lan::local_ipv4` (UDP ソケットを既定ルートへ `connect` するだけで送信はしない) で既定ルートのアドレスを得て、`ui::scan_dialog` を開く。NIC ごとの候補は `Range::for_interface` が作る。入力は `Range::parse` で検証する。選んだ範囲は `app` が覚え、次に開いたときの既定にする。サイドバーで「SSH認証を試す」をオンにしていれば、そのアカウントも一緒に渡す。
+2. `Scanner::start(range, ...)` が、今回の範囲に入る前回の結果だけを消し、別の範囲の結果は残す。`range` に含まれる自分のアドレスを `netif::interfaces` から探して除き、tokio タスクで各アドレスへ TCP 接続を試す。`/24` より広い範囲は、自分を含む `/24` に近い順に並べる。同時に走らせるのは 64 台まで、試行の開始は `tokio::time::interval` で 5 ms 間隔 (毎秒 200 件) に抑え、1 台 0.3 秒で打ち切る。SYN と ARP の集中で、ルーターや VPN、侵入検知が RDP など他の通信を切らないようにするためである。自分のアドレスは除く。直近に投げたアドレスと完了数は atomic に書き、サイドバーが毎フレーム読む。今回の範囲で未登録の機器が無いときは、その旨を表示する。
+3. 開いていたアドレスはすぐ mpsc で `app` に渡し、再描画を要求する。逆引きは設定 `scan_names` が有効なときだけ、別タスクの `spawn_blocking` で行い、3 秒以内に分かった名前だけを後から送る。OS の逆引きは NetBIOS などで長く待つことがあるため、スキャンの完了は逆引きを待たない。受信側はスキャン完了後も、最後の逆引きが終わるまでチャネルを読む。アカウントが指定されているときは、開いていたアドレスへ `ssh::probe_password` を最大 32 並列で行う。パスワード認証のみで、8 秒で打ち切る。未登録のホスト鍵はその試行限り受け入れ、`known_hosts` は変えない。鍵が変わっていたら失敗とする。確認後は切断する。結果は `AuthCheck` として機器に載せる。
 4. `app` は毎フレーム結果を取り込み、config に登録済みのものを除いてサイドバーに渡す。
-5. 機器を選ぶと `ui::ssh_login_dialog` が `HostDraft` とパスワードを返す。`app` は `user@host:port` の SSH セッションを開き、`PendingSave` として覚える。セッションが `Running` になったら `sshconfig::save_host` で書き込み、終了したら破棄する。
+5. 機器を選ぶと `ui::ssh_login_dialog` が `HostDraft` とパスワードを返す。認証を試した機器では、そのユーザーとパスワードをダイアログに入れる。`app` は `user@host:port` の SSH セッションを開き、`PendingSave` として覚える。セッションが `Running` になったら `sshconfig::save_host` で書き込み、終了したら破棄する。
 
 ### 4.5 SFTP
 

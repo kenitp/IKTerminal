@@ -8,6 +8,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
 use tokio::net::TcpStream;
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
 
@@ -124,12 +125,35 @@ fn mask(prefix: u8) -> u32 {
     u32::MAX << (32 - u32::from(prefix))
 }
 
+const AUTH_PARALLEL: usize = 32;
+
+/// Account used to try SSH password authentication during a scan.
+#[derive(Clone)]
+pub struct Account {
+    pub user: String,
+    pub password: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct AuthCheck {
+    pub user: String,
+    pub state: AuthState,
+}
+
+#[derive(Clone, Debug)]
+pub enum AuthState {
+    Checking,
+    Connected,
+    Rejected(String),
+}
+
 #[derive(Clone, Debug)]
 pub struct Device {
     pub addr: Ipv4Addr,
     pub port: u16,
     /// Reverse lookup result (DNS, mDNS, NetBIOS, ... as the OS resolver provides).
     pub name: Option<String>,
+    pub auth: Option<AuthCheck>,
 }
 
 impl Device {
@@ -149,6 +173,7 @@ impl Device {
 enum Event {
     Found(Device),
     Named(Ipv4Addr, String),
+    Auth(Ipv4Addr, AuthState),
     Done,
 }
 
@@ -167,6 +192,7 @@ pub struct Scanner {
     scanning: bool,
     progress: Arc<Progress>,
     total: u32,
+    range: Option<Range>,
     pub devices: Vec<Device>,
     pub message: Option<String>,
 }
@@ -188,15 +214,18 @@ impl Scanner {
     }
 
     /// With `names`, devices are reverse-resolved after they are found.
+    /// `auth` tries that password on each open port. Devices outside `range` stay.
     pub fn start(
         &mut self,
         range: Range,
         port: u16,
         names: bool,
+        auth: Option<Account>,
         wake: impl Fn() + Send + Sync + 'static,
     ) {
-        self.devices.clear();
         self.message = None;
+        self.devices.retain(|device| !range.contains(device.addr));
+        self.range = Some(range);
         let local = own_address(range);
         self.total = range.count(local);
         self.progress = Arc::default();
@@ -205,6 +234,7 @@ impl Scanner {
             range.hosts(local),
             port,
             names,
+            auth,
             self.progress.clone(),
             Arc::new(wake),
         ));
@@ -229,10 +259,29 @@ impl Scanner {
                         }
                     }
                 }
+                Ok(Event::Auth(addr, state)) => {
+                    if let Some(device) = self.devices.iter_mut().find(|device| device.addr == addr)
+                        && let Some(auth) = &mut device.auth
+                    {
+                        auth.state = state;
+                    }
+                }
                 Ok(Event::Done) => {
                     self.scanning = false;
-                    if self.devices.is_empty() {
-                        self.message = Some("未登録の機器は見つかりません".to_owned());
+                    let found = self.range.is_some_and(|range| {
+                        self.devices
+                            .iter()
+                            .any(|device| range.contains(device.addr))
+                    });
+                    if !found {
+                        self.message = Some(
+                            if self.devices.is_empty() {
+                                "未登録の機器は見つかりません"
+                            } else {
+                                "このネットワークでは未登録の機器は見つかりません"
+                            }
+                            .to_owned(),
+                        );
                     }
                 }
                 Err(TryRecvError::Empty) => return,
@@ -253,6 +302,7 @@ fn spawn(
     mut addrs: impl Iterator<Item = Ipv4Addr> + Send + 'static,
     port: u16,
     names: bool,
+    auth: Option<Account>,
     progress: Arc<Progress>,
     wake: Arc<dyn Fn() + Send + Sync>,
 ) -> Receiver<Event> {
@@ -261,6 +311,7 @@ fn spawn(
         let mut tasks = JoinSet::new();
         let mut pace = tokio::time::interval(PROBE_INTERVAL);
         pace.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let auth_limit = Arc::new(Semaphore::new(AUTH_PARALLEL));
         loop {
             while tasks.len() < PARALLEL
                 && let Some(addr) = addrs.next()
@@ -270,6 +321,8 @@ fn spawn(
                 let tx = tx.clone();
                 let wake = wake.clone();
                 let progress = progress.clone();
+                let auth = auth.clone();
+                let auth_limit = auth_limit.clone();
                 tasks.spawn(async move {
                     let open = tokio::time::timeout(
                         CONNECT_TIMEOUT,
@@ -283,10 +336,34 @@ fn spawn(
                             addr,
                             port,
                             name: None,
+                            auth: auth.as_ref().map(|account| AuthCheck {
+                                user: account.user.clone(),
+                                state: AuthState::Checking,
+                            }),
                         }));
                         wake();
                         if names {
-                            tokio::spawn(lookup(tx, wake, addr));
+                            tokio::spawn(lookup(tx.clone(), wake.clone(), addr));
+                        }
+                        if let Some(account) = auth {
+                            tokio::spawn(async move {
+                                let Ok(_permit) = auth_limit.acquire_owned().await else {
+                                    return;
+                                };
+                                let state = match super::ssh::probe_password(
+                                    addr,
+                                    port,
+                                    &account.user,
+                                    &account.password,
+                                )
+                                .await
+                                {
+                                    Ok(()) => AuthState::Connected,
+                                    Err(reason) => AuthState::Rejected(reason),
+                                };
+                                let _ = tx.send(Event::Auth(addr, state));
+                                wake();
+                            });
                         }
                     }
                 });
@@ -493,11 +570,46 @@ mod tests {
     }
 
     #[test]
+    fn rescan_drops_only_the_same_range() {
+        let device = |octets: [u8; 4]| Device {
+            addr: Ipv4Addr::from(octets),
+            port: 22,
+            name: None,
+            auth: None,
+        };
+        let mut devices = vec![
+            device([192, 168, 1, 5]),
+            device([192, 168, 2, 5]),
+            device([172, 24, 1, 1]),
+            device([172, 16, 1, 1]),
+        ];
+
+        let home = Range::parse("192.168.1.0/24").unwrap();
+        devices.retain(|device| !home.contains(device.addr));
+        assert_eq!(
+            devices.iter().map(|device| device.addr).collect::<Vec<_>>(),
+            vec![
+                Ipv4Addr::new(192, 168, 2, 5),
+                Ipv4Addr::new(172, 24, 1, 1),
+                Ipv4Addr::new(172, 16, 1, 1),
+            ]
+        );
+
+        let office = Range::parse("172.24.0.0/16").unwrap();
+        devices.retain(|device| !office.contains(device.addr));
+        assert_eq!(
+            devices.iter().map(|device| device.addr).collect::<Vec<_>>(),
+            vec![Ipv4Addr::new(192, 168, 2, 5), Ipv4Addr::new(172, 16, 1, 1)]
+        );
+    }
+
+    #[test]
     fn alias_uses_the_first_label() {
         let device = Device {
             addr: Ipv4Addr::new(10, 0, 0, 5),
             port: 22,
             name: Some("RaspberryPi.lan".to_owned()),
+            auth: None,
         };
         assert_eq!(device.alias(), "raspberrypi");
         let bare = Device {

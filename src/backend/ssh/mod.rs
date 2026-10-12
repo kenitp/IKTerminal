@@ -3,6 +3,9 @@
 mod auth;
 mod handler;
 mod known_hosts;
+mod probe;
+
+pub use probe::probe_password;
 
 use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
