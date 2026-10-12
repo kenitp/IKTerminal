@@ -22,7 +22,7 @@
 app (オーケストレーション: タブ、ダイアログ、ショートカット)
  |-- ui        プレゼンテーション層 (egui 描画と入力)
  |-- session   アプリケーション層 (1 タブ = 端末 + バックエンド)
- |-- backend   I/O 層 (local / ssh / sftp / serial / lan)
+ |-- backend   I/O 層 (local / ssh / sftp / serial / lan / netif)
  |-- terminal  コア層 (端末状態と UI 非依存の共有状態)
  |-- sshconfig 独立モジュール (OpenSSH config の解決と編集)
  |-- settings  独立モジュール (設定の永続化)
@@ -62,7 +62,8 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `backend/cwd.rs` | ローカルシェルの作業ディレクトリ (Windows はプロセスの PEB、Linux は `/proc/<pid>/cwd`) |
 | `backend/serial.rs` | COM ポートの列挙と、8N1 でのバイト転送 |
 | `backend/bitwarden.rs` | SSH 前に Bitwarden デスクトップが止まっていれば起動する |
-| `backend/lan.rs` | `Scanner`: 自分の `192.168.x.0/24` または `172.x.0.0/16` のポート開放スキャンと逆引き (Windows は `GetNameInfoW`、Linux は `getnameinfo`) |
+| `backend/netif.rs` | NIC の IPv4 アドレスとプレフィックス長 (Windows は `GetIpAddrTable` と `ConvertInterfaceLuidToAlias`、Linux は `getifaddrs`)。停止中とループバックは除く |
+| `backend/lan.rs` | `Range`: プライベートの `/16` から `/30`。`Scanner`: その範囲のポート開放スキャンと逆引き (Windows は `GetNameInfoW`、Linux は `getnameinfo`) |
 | `backend/ssh/mod.rs` | 接続 (ProxyJump の連鎖)、シェルチャネルの入出力ループ |
 | `backend/ssh/handler.rs` | ホスト鍵検証 (known_hosts) |
 | `backend/ssh/known_hosts.rs` | 変わったホスト鍵の行を除き、新しい鍵を足す |
@@ -70,13 +71,15 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `backend/sftp.rs` | `SftpClient`: 一覧、操作、転送 (再帰・進捗・中止) |
 | `sshconfig/resolve.rs` | `SshConfig`: Include / Host / Match all の解決、ホスト一覧 |
 | `sshconfig/document.rs` | `Document`: 書式を保持した編集用モデル |
-| `sshconfig/command.rs` | シェル行から `ssh` コマンドを取り出し、接続成功後に config へ追記する |
+| `sshconfig/command.rs` | シェル行から `ssh` コマンドを取り出し、接続成功後に config へ追記する。`rename_host` で IP のエイリアスを置き換える |
 | `ui/theme.rs` | 色定数と egui スタイル |
 | `ui/fonts.rs` | システムフォントの mmap 読み込み、`TermFont` (セル寸法) |
 | `ui/widgets.rs` | 共通ウィジェット |
 | `ui/tabbar.rs`, `ui/sidebar.rs` | タブバー (ウィンドウ移動、タブの並べ替えと切り離し、新規タブメニュー、ディレクトリのホバー)、サイドバー。操作は `TabAction` / `SidebarAction` で `app` に返す |
 | `ui/chrome.rs` | 枠なしウィンドウのリサイズ端 |
 | `ui/ssh_save_dialog.rs` | `ssh` コマンドを config に追加するか尋ねるダイアログ |
+| `ui/scan_dialog.rs` | LAN スキャンの範囲の選択。`ScanResult::Start(Range)` を返す |
+| `ui/alias_dialog.rs` | IP のエイリアスを `hostname.local` などに変えるか尋ねる。`AliasResult::Rename(String)` を返す |
 | `ui/ssh_login_dialog.rs` | LAN スキャンで選んだ機器のエイリアス、ユーザー、パスワード入力 |
 | `ui/serial_dialog.rs` | COM ポートとボーレートの選択 |
 | `ui/terminal/view.rs` | 端末ウィジェット: 入力、選択、選択中のスクロール、IME |
@@ -114,14 +117,15 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
    - TCP 接続 (2 段目以降は前段の `direct-tcpip` チャネル) を `ConnectTimeout` 以内に確立する。
    - ハンドシェイクを行う。ホスト鍵の確認はユーザー応答を待つため、タイムアウトの対象外とする。
    - 認証する。
-3. PTY を要求してシェルを起動し、入出力ループに入る。
-4. 確立した接続は `Link` (`OnceLock`) で公開し、SFTP が同じ接続上に別チャネルを開く。
+3. シェルの前に exec チャネルで `$HOME`、`$PWD`、`hostname` (無ければ `uname -n`) を 1 行ずつ読む (2 秒で打ち切り)。ディレクトリは `RemoteDir` に、ホスト名は DNS 名の文字だけのときに `Shared::login_host` に入れる。
+4. PTY を要求してシェルを起動し、入出力ループに入る。
+5. 確立した接続は `Link` (`OnceLock`) で公開し、SFTP が同じ接続上に別チャネルを開く。
 
 ### 4.4 LAN スキャン
 
-1. `Scanner::start` が UDP ソケットを既定ルートへ `connect` (送信はしない) して自分の IPv4 を得る。
-2. tokio タスクが、自分のアドレスが `192.168.x.y` なら `192.168.x.0/24`、`172.x.y.z` なら `172.x.0.0/16` の各アドレスへ TCP 接続を試す。`/16` は自分の第3オクテットに近い `/24` から順に並べる。同時に走らせるのは 64 台まで、試行の開始は `tokio::time::interval` で 5 ms 間隔 (毎秒 200 件) に抑え、1 台 0.3 秒で打ち切る。SYN と ARP の集中で、ルーターや VPN、侵入検知が RDP など他の通信を切らないようにするためである。自分のアドレスは除く。直近に投げたアドレスと完了数は atomic に書き、サイドバーが毎フレーム読む。
-3. 開いていたアドレスはすぐ mpsc で `app` に渡し、再描画を要求する。逆引きは別タスクの `spawn_blocking` で行い、3 秒以内に分かった名前だけを後から送る。OS の逆引きは NetBIOS などで長く待つことがあるため、スキャンの完了は逆引きを待たない。受信側はスキャン完了後も、最後の逆引きが終わるまでチャネルを読む。
+1. 「スキャン」で `app` が `netif::interfaces` で NIC ごとの IPv4 とプレフィックス長を読み、`lan::local_ipv4` (UDP ソケットを既定ルートへ `connect` するだけで送信はしない) で既定ルートのアドレスを得て、`ui::scan_dialog` を開く。NIC ごとの候補は `Range::for_interface` が作る。入力は `Range::parse` で検証する。選んだ範囲は `app` が覚え、次に開いたときの既定にする。
+2. `Scanner::start(range, ...)` が、`range` に含まれる自分のアドレスを `netif::interfaces` から探して除き、tokio タスクで各アドレスへ TCP 接続を試す。`/24` より広い範囲は、自分を含む `/24` に近い順に並べる。同時に走らせるのは 64 台まで、試行の開始は `tokio::time::interval` で 5 ms 間隔 (毎秒 200 件) に抑え、1 台 0.3 秒で打ち切る。SYN と ARP の集中で、ルーターや VPN、侵入検知が RDP など他の通信を切らないようにするためである。自分のアドレスは除く。直近に投げたアドレスと完了数は atomic に書き、サイドバーが毎フレーム読む。
+3. 開いていたアドレスはすぐ mpsc で `app` に渡し、再描画を要求する。逆引きは設定 `scan_names` が有効なときだけ、別タスクの `spawn_blocking` で行い、3 秒以内に分かった名前だけを後から送る。OS の逆引きは NetBIOS などで長く待つことがあるため、スキャンの完了は逆引きを待たない。受信側はスキャン完了後も、最後の逆引きが終わるまでチャネルを読む。
 4. `app` は毎フレーム結果を取り込み、config に登録済みのものを除いてサイドバーに渡す。
 5. 機器を選ぶと `ui::ssh_login_dialog` が `HostDraft` とパスワードを返す。`app` は `user@host:port` の SSH セッションを開き、`PendingSave` として覚える。セッションが `Running` になったら `sshconfig::save_host` で書き込み、終了したら破棄する。
 
@@ -151,6 +155,7 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 - **タブのフォルダ名**: ローカルシェルのプロセスから作業ディレクトリを読む。UI は約 0.5 秒ごとに `session` 経由で取得し、`フォルダ · シェル名` とフルパスのホバーを描く。SSH とシリアルは対象外。WSL の Linux 側ディレクトリは読まない。
 - **選択の追従**: ドラッグ位置がグリッドの上下にはみ出すと、はみ出し量に応じて表示をスクロールし、選択端をそのセルへ更新する。選択がある状態で文字キーや移動キーを押すと、選択をバッファの最終行まで広げて最下部を表示する。そのキーはシェルへ送らない。コピー、貼り付け、切り取り、Shift+PageUp / PageDown は送る。
 - **`ssh` の検出**: Enter の時点でカーソル行 (折り返しを含む) を読み、コマンド位置の `ssh` だけを解釈して保留する。その後の画面でリモートプロンプト (`user@host:~$`) を見たら追加を尋ねる。エイリアスはプロンプトのホスト名に `.local` を付けた値にし、`HostName` は接続に使った IP のままにする。失敗文言か、元のプロンプトへの復帰では破棄する。保存は `Document` 経由で、他の行を崩さない。
+- **IP のエイリアスの変更**: `app` は SSH セッションが `Running` になったとき 1 回だけ確認する。接続先がそのまま config の IP エイリアスなら、または LAN スキャンで IP エイリアスを保存した直後なら、`login_host` から `sshconfig::local_alias` で候補を作り `ui::alias_dialog` を出す。変更は `sshconfig::rename_host` が `Host` のパターンだけを置き換え、`HostName` が無ければ元の IP を足す。断ったエイリアスはプロセス内で覚える。
 - **Bitwarden**: 設定が有効なときだけ、SSH 接続の直前にプロセスを確認する。未起動なら、インストーラ版は `Bitwarden.exe`、Microsoft Store 版は `shell:AppsFolder` のアプリ ID で起動し、`openssh-ssh-agent` のパイプを待ってから認証する。
 - **シリアル**: ポートの開閉は UI ではなく `backend::serial` が行う。失敗はダイアログに返し、成功したらタブを追加する。
 - **タスクトレイ**: 設定が有効なときだけアイコンを出す。閉じる要求は取り消し、ウィンドウを隠す。アイコンの操作は egui の再描画を起こしてから UI スレッドで処理する。「終了」はプロセスを終わらせる。更新は `Ver.Up` で行う。Linux は KSNI (D-Bus) で、GTK はリンクしない。

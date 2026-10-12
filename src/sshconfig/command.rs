@@ -1,6 +1,6 @@
 //! Detect an `ssh` invocation typed at a shell prompt and turn it into a config block.
 
-use super::document::{Document, set_option, write_file};
+use super::document::{Document, find_option, push_option, set_option, write_file};
 use super::resolve::SshConfig;
 
 /// Connection fields taken from one `ssh` command.
@@ -62,19 +62,27 @@ impl HostDraft {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        let alias = self.alias.trim();
-        if alias.is_empty() || self.hostname.trim().is_empty() {
+        if self.alias.trim().is_empty() || self.hostname.trim().is_empty() {
             return Err("エイリアスとホスト名は必須です".to_owned());
         }
-        if alias.contains(|c: char| c.is_whitespace() || matches!(c, '*' | '?' | '!')) {
-            return Err("エイリアスに空白やワイルドカードは使えません".to_owned());
-        }
+        validate_alias(&self.alias)?;
         let port = self.port.trim();
         if !port.is_empty() && port.parse::<u16>().ok().filter(|p| *p > 0).is_none() {
             return Err("ポートが不正です".to_owned());
         }
         Ok(())
     }
+}
+
+fn validate_alias(alias: &str) -> Result<(), String> {
+    let alias = alias.trim();
+    if alias.is_empty() {
+        return Err("エイリアスを入力してください".to_owned());
+    }
+    if alias.contains(|c: char| c.is_whitespace() || matches!(c, '*' | '?' | '!')) {
+        return Err("エイリアスに空白やワイルドカードは使えません".to_owned());
+    }
+    Ok(())
 }
 
 /// The last `ssh` command on a shell line (prompt included), if it has a destination.
@@ -181,6 +189,12 @@ pub fn apply_connected_host(cmd: &mut SshCommand, host: &str) {
     }
 }
 
+/// `hostname.local` for a host name. `None` for an IP address or empty text.
+pub fn local_alias(host: &str) -> Option<String> {
+    let host = host.trim();
+    (!host.is_empty() && !is_ip_host(host)).then(|| format!("{}.local", short_host(host)))
+}
+
 fn bare_ip(host: &str) -> String {
     host.trim_matches(['[', ']']).to_owned()
 }
@@ -193,7 +207,7 @@ fn short_host(host: &str) -> String {
         .to_owned()
 }
 
-fn is_ip_host(host: &str) -> bool {
+pub fn is_ip_host(host: &str) -> bool {
     host.trim_matches(['[', ']'])
         .parse::<std::net::IpAddr>()
         .is_ok()
@@ -309,6 +323,49 @@ pub fn save_host(draft: &HostDraft) -> Result<(), String> {
     set_option(lines, "IdentityFile", draft.identity_file.trim());
     set_option(lines, "ProxyJump", draft.proxy_jump.trim());
     write_file(&path, &doc.to_text()).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Renames the `Host` pattern `old` to `new` in `~/.ssh/config`.
+pub fn rename_host(old: &str, new: &str) -> Result<(), String> {
+    let path = SshConfig::default_path().ok_or("ホームディレクトリが見つかりません")?;
+    let existing =
+        std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut doc = Document::parse(&existing);
+    rename_in(&mut doc, old, new)?;
+    write_file(&path, &doc.to_text()).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// A block without `HostName` gets `HostName old`, so it still reaches the same address.
+fn rename_in(doc: &mut Document, old: &str, new: &str) -> Result<(), String> {
+    let (old, new) = (old.trim(), new.trim());
+    validate_alias(new)?;
+    let has = |patterns: &str, name: &str| {
+        patterns
+            .split_whitespace()
+            .any(|p| p.eq_ignore_ascii_case(name))
+    };
+    if doc
+        .blocks
+        .iter()
+        .any(|b| b.is_host() && has(&b.patterns, new))
+    {
+        return Err(format!("{new} は既に config にあります"));
+    }
+    let block = doc
+        .blocks
+        .iter_mut()
+        .find(|b| b.is_host() && has(&b.patterns, old))
+        .ok_or_else(|| format!("{old} が config にありません"))?;
+    block.patterns = block
+        .patterns
+        .split_whitespace()
+        .map(|p| if p.eq_ignore_ascii_case(old) { new } else { p })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if find_option(&block.lines, "HostName").is_none() {
+        push_option(&mut block.lines, "HostName", old);
+    }
+    Ok(())
 }
 
 fn parse_ssh_args(tokens: &[String]) -> Option<SshCommand> {
@@ -643,6 +700,42 @@ mod tests {
         assert_eq!(ssh_outcome(line, &refused), SshOutcome::Failed);
         let back = format!("{line}\nkenichi@desktop:~$");
         assert_eq!(ssh_outcome(line, &back), SshOutcome::Failed);
+    }
+
+    #[test]
+    fn rename_keeps_the_address_and_rejects_duplicates() {
+        let mut doc = Document::parse(
+            "Host 192.168.1.20\n    User pi\nHost nas\n    HostName 10.0.0.9\nHost *\n",
+        );
+        rename_in(&mut doc, "192.168.1.20", "raspberrypi.local").unwrap();
+        assert_eq!(
+            doc.to_text(),
+            "Host raspberrypi.local\n    User pi\n    HostName 192.168.1.20\nHost nas\n    HostName 10.0.0.9\nHost *\n"
+        );
+
+        let mut doc = Document::parse("Host 10.0.0.9 box\n    HostName 10.0.0.9\nHost nas\n");
+        rename_in(&mut doc, "10.0.0.9", "box2.local").unwrap();
+        assert_eq!(doc.blocks[0].patterns, "box2.local box");
+        assert_eq!(
+            doc.to_text().matches("HostName").count(),
+            1,
+            "an existing HostName is kept"
+        );
+
+        assert!(rename_in(&mut doc, "box", "nas").is_err());
+        assert!(rename_in(&mut doc, "missing", "x.local").is_err());
+        assert!(rename_in(&mut doc, "box", "a b").is_err());
+    }
+
+    #[test]
+    fn local_alias_skips_addresses() {
+        assert_eq!(
+            local_alias("raspberrypi.lan").as_deref(),
+            Some("raspberrypi.local")
+        );
+        assert_eq!(local_alias("nas").as_deref(), Some("nas.local"));
+        assert_eq!(local_alias("192.168.1.20"), None);
+        assert_eq!(local_alias(" "), None);
     }
 
     #[test]

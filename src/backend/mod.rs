@@ -4,6 +4,7 @@ pub mod bitwarden;
 pub mod cwd;
 pub mod lan;
 pub mod local;
+pub mod netif;
 pub mod serial;
 pub mod sftp;
 pub mod ssh;

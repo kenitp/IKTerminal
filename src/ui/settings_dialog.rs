@@ -132,6 +132,13 @@ impl SettingsDialog {
                     ui.label("LAN スキャンのポート");
                     ui.add(egui::DragValue::new(&mut self.draft.scan_port).range(1..=65535));
                     ui.end_row();
+
+                    ui.label("LAN スキャンの名前");
+                    ui.checkbox(
+                        &mut self.draft.scan_names,
+                        "見つかった機器のホスト名を逆引きする",
+                    );
+                    ui.end_row();
                 });
             ui.label(
                 RichText::new("スクロールバック行数は新しいタブから適用されます")

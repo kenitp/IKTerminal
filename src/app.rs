@@ -11,8 +11,9 @@ use egui::{
     ViewportCommand, ViewportId,
 };
 
-use crate::backend::lan::{Device, Scanner};
+use crate::backend::lan::{self as lan, Device, Range, Scanner};
 use crate::backend::local::{self, ShellSpec};
+use crate::backend::netif;
 use crate::cursor;
 use crate::instance::{self, Request};
 use crate::session::{Kind, Session};
@@ -20,9 +21,11 @@ use crate::settings::Settings;
 use crate::sshconfig::{self, HostDraft, HostEntry, SshCommand, SshConfig};
 use crate::terminal::Status;
 use crate::tray::{self, Resident};
+use crate::ui::alias_dialog::{AliasDialog, AliasResult};
 use crate::ui::config_editor::{ConfigEditor, EditorResult};
 use crate::ui::fonts::{self, TermFont};
 use crate::ui::prompt_dialog::PromptDialog;
+use crate::ui::scan_dialog::{ScanDialog, ScanResult};
 use crate::ui::serial_dialog::{SerialDialog, SerialResult};
 use crate::ui::settings_dialog::{SettingsDialog, SettingsResult};
 use crate::ui::sftp_panel::SftpView;
@@ -83,6 +86,8 @@ struct Desk {
     prompt: PromptDialog,
     ssh_save: Option<SshSaveDialog>,
     login: Option<SshLoginDialog>,
+    scan: Option<ScanDialog>,
+    alias: Option<AliasDialog>,
     pending_ssh: Option<PendingSsh>,
     notice: Option<String>,
     focus_terminal: bool,
@@ -108,6 +113,8 @@ impl Desk {
             prompt: PromptDialog::default(),
             ssh_save: None,
             login: None,
+            scan: None,
+            alias: None,
             pending_ssh: None,
             notice,
             focus_terminal: true,
@@ -134,6 +141,10 @@ pub struct App {
     settings_dialog: Option<SettingsDialog>,
     settings_desk: u64,
     ssh_dismissed: HashSet<String>,
+    /// SSH sessions already checked for an IP-address alias.
+    alias_checked: HashSet<u64>,
+    /// IP-address aliases the user chose to keep, in lower case.
+    alias_kept: HashSet<String>,
     incoming: Receiver<Request>,
     update_rx: Receiver<StagedUpdate>,
     update: Option<StagedUpdate>,
@@ -146,6 +157,7 @@ pub struct App {
     quitting: bool,
     pending_cursor: Option<PendingCursor>,
     lan: Scanner,
+    scan_range: Option<Range>,
     pending_saves: Vec<PendingSave>,
 }
 
@@ -182,6 +194,8 @@ impl App {
             settings_dialog: None,
             settings_desk: 0,
             ssh_dismissed: HashSet::new(),
+            alias_checked: HashSet::new(),
+            alias_kept: HashSet::new(),
             incoming,
             update_rx,
             update: None,
@@ -193,6 +207,7 @@ impl App {
             quitting: false,
             pending_cursor: None,
             lan: Scanner::default(),
+            scan_range: None,
             pending_saves: Vec::new(),
         };
         let shell = execute.or_else(|| app.default_shell());
@@ -249,13 +264,41 @@ impl App {
         self.push_session(index, session);
     }
 
-    fn start_scan(&mut self, ctx: &egui::Context) {
+    fn open_scan(&mut self, index: usize) {
         if self.lan.scanning() {
             return;
         }
-        let wake = ctx.clone();
-        self.lan
-            .start(self.settings.scan_port, move || wake.request_repaint());
+        self.desks[index].scan = Some(ScanDialog::new(
+            &netif::interfaces(),
+            lan::local_ipv4().ok(),
+            self.scan_range,
+        ));
+    }
+
+    fn scan_dialog(&mut self, ctx: &egui::Context, index: usize) {
+        let Some(dialog) = &mut self.desks[index].scan else {
+            return;
+        };
+        match dialog.show(ctx) {
+            Some(ScanResult::Start(range)) => {
+                self.desks[index].scan = None;
+                self.scan_range = Some(range);
+                if !self.lan.scanning() {
+                    let wake = ctx.clone();
+                    self.lan.start(
+                        range,
+                        self.settings.scan_port,
+                        self.settings.scan_names,
+                        move || wake.request_repaint(),
+                    );
+                }
+            }
+            Some(ScanResult::Closed) => {
+                self.desks[index].scan = None;
+                self.desks[index].focus_terminal = true;
+            }
+            None => {}
+        }
     }
 
     fn poll_lan(&mut self) {
@@ -315,7 +358,7 @@ impl App {
         if ready.is_empty() {
             return;
         }
-        for pending in ready {
+        for pending in &ready {
             let message = match sshconfig::save_host(&pending.draft) {
                 Ok(()) => format!("{} を SSH config に追加しました", pending.draft.alias),
                 Err(error) => format!("SSH config に追加できません: {error}"),
@@ -323,6 +366,87 @@ impl App {
             self.notice(pending.desk, &message);
         }
         self.reload_config();
+        for pending in ready {
+            self.offer_alias(pending.session, pending.draft.alias.trim());
+        }
+    }
+
+    /// Asks to rename the config alias of a running SSH session that connected by an IP alias.
+    fn poll_aliases(&mut self) {
+        let mut found = Vec::new();
+        for desk in &self.desks {
+            for session in &desk.sessions {
+                if !session.is_running_ssh() || !self.alias_checked.insert(session.id) {
+                    continue;
+                }
+                if let Some(target) = session.ssh_target()
+                    && sshconfig::is_ip_host(target)
+                    && self
+                        .hosts
+                        .iter()
+                        .any(|host| host.alias.eq_ignore_ascii_case(target))
+                {
+                    found.push((session.id, target.to_owned()));
+                }
+            }
+        }
+        for (session, alias) in found {
+            self.offer_alias(session, &alias);
+        }
+    }
+
+    fn offer_alias(&mut self, session: u64, old: &str) {
+        self.alias_checked.insert(session);
+        if !sshconfig::is_ip_host(old) || self.alias_kept.contains(&old.to_ascii_lowercase()) {
+            return;
+        }
+        let Some((index, tab)) = self.desks.iter().enumerate().find_map(|(index, desk)| {
+            let tab = desk.sessions.iter().position(|s| s.id == session)?;
+            Some((index, tab))
+        }) else {
+            return;
+        };
+        let desk = &mut self.desks[index];
+        let Some(suggested) = desk.sessions[tab]
+            .login_host()
+            .and_then(|host| sshconfig::local_alias(&host))
+        else {
+            return;
+        };
+        if desk.alias.is_none() {
+            desk.alias = Some(AliasDialog::new(old.to_owned(), suggested));
+        }
+    }
+
+    fn alias_dialog(&mut self, ctx: &egui::Context, index: usize) {
+        let Some(dialog) = &mut self.desks[index].alias else {
+            return;
+        };
+        match dialog.show(ctx) {
+            Some(AliasResult::Rename(new)) => {
+                let old = dialog.old().to_owned();
+                match sshconfig::rename_host(&old, &new) {
+                    Ok(()) => {
+                        self.desks[index].alias = None;
+                        self.desks[index].focus_terminal = true;
+                        self.desks[index].notice =
+                            Some(format!("エイリアスを {old} から {new} に変更しました"));
+                        self.reload_config();
+                    }
+                    Err(error) => {
+                        if let Some(dialog) = &mut self.desks[index].alias {
+                            dialog.set_error(error);
+                        }
+                    }
+                }
+            }
+            Some(AliasResult::Dismissed) => {
+                self.alias_kept.insert(dialog.old().to_ascii_lowercase());
+                self.desks[index].alias = None;
+                self.desks[index].focus_terminal = true;
+            }
+            None => {}
+        }
     }
 
     fn reconnect(&mut self, ctx: &egui::Context, index: usize, tab: usize) {
@@ -895,7 +1019,7 @@ impl App {
                         self.open_editor(index, focus.as_deref())
                     }
                     Some(SidebarAction::Reload) => self.reload_config(),
-                    Some(SidebarAction::Scan) => self.start_scan(&ctx),
+                    Some(SidebarAction::Scan) => self.open_scan(index),
                     Some(SidebarAction::PickDevice(device)) => {
                         self.desks[index].login = Some(SshLoginDialog::new(&device));
                     }
@@ -1036,6 +1160,8 @@ impl App {
         let id = self.desks[index].id;
         self.desks[index].ssh_save.is_some()
             || self.desks[index].login.is_some()
+            || self.desks[index].scan.is_some()
+            || self.desks[index].alias.is_some()
             || self.desks[index].serial_dialog.is_some()
             || (self.editor.is_some() && self.editor_desk == id)
             || (self.settings_dialog.is_some() && self.settings_desk == id)
@@ -1046,6 +1172,8 @@ impl App {
         desk.prompt.show(ctx, &desk.sessions);
         self.ssh_save_dialog(ctx, index);
         self.login_dialog(ctx, index);
+        self.scan_dialog(ctx, index);
+        self.alias_dialog(ctx, index);
         if self.editor.is_some()
             && self.editor_desk == self.desks[index].id
             && let Some(editor) = &mut self.editor
@@ -1259,6 +1387,7 @@ impl App {
             self.poll_update();
             self.poll_lan();
             self.poll_saves();
+            self.poll_aliases();
             if ui.input(|i| i.viewport().close_requested())
                 && self.settings.tray
                 && self.tray.is_some()

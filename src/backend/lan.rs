@@ -1,5 +1,6 @@
-//! LAN discovery: hosts on the local 192.168 /24 or 172 /16 that accept TCP on a port.
+//! LAN discovery: hosts in a private IPv4 range that accept TCP on a port.
 
+use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -16,6 +17,112 @@ const NAME_TIMEOUT: Duration = Duration::from_secs(3);
 const PARALLEL: usize = 64;
 /// At most 200 probes per second.
 const PROBE_INTERVAL: Duration = Duration::from_millis(5);
+const MIN_PREFIX: u8 = 16;
+const MAX_PREFIX: u8 = 30;
+const PRIVATE: [(Ipv4Addr, u8); 3] = [
+    (Ipv4Addr::new(10, 0, 0, 0), 8),
+    (Ipv4Addr::new(172, 16, 0, 0), 12),
+    (Ipv4Addr::new(192, 168, 0, 0), 16),
+];
+
+/// A private IPv4 network from /16 to /30.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Range {
+    network: Ipv4Addr,
+    prefix: u8,
+}
+
+impl Range {
+    /// The network of `prefix` that holds `addr`.
+    pub fn around(addr: Ipv4Addr, prefix: u8) -> Result<Self, String> {
+        if !(MIN_PREFIX..=MAX_PREFIX).contains(&prefix) {
+            return Err(format!(
+                "/{MIN_PREFIX} から /{MAX_PREFIX} で指定してください"
+            ));
+        }
+        let range = Self {
+            network: Ipv4Addr::from(u32::from(addr) & mask(prefix)),
+            prefix,
+        };
+        if !PRIVATE.iter().any(|&(net, len)| {
+            len <= prefix && u32::from(range.network) & mask(len) == u32::from(net)
+        }) {
+            return Err(format!(
+                "{range} はプライベートアドレス (10/8, 172.16/12, 192.168/16) ではありません"
+            ));
+        }
+        Ok(range)
+    }
+
+    /// Choices for an interface: its own network when it is /24 to /30, otherwise its /24
+    /// and its network widened to at least /16. Point-to-point and public addresses give none.
+    pub fn for_interface(addr: Ipv4Addr, prefix: u8) -> Vec<Self> {
+        let prefixes: &[u8] = match prefix {
+            31.. => &[],
+            24..=30 => &[prefix],
+            _ => &[24, prefix.max(MIN_PREFIX)],
+        };
+        prefixes
+            .iter()
+            .filter_map(|&prefix| Self::around(addr, prefix).ok())
+            .collect()
+    }
+
+    /// `a.b.c.d/n`. Host bits are cleared.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let invalid = || "192.168.1.0/24 の形で入力してください".to_owned();
+        let (addr, prefix) = text.trim().split_once('/').ok_or_else(invalid)?;
+        let addr: Ipv4Addr = addr.trim().parse().map_err(|_| invalid())?;
+        let prefix: u8 = prefix.trim().parse().map_err(|_| invalid())?;
+        Self::around(addr, prefix)
+    }
+
+    fn size(self) -> u32 {
+        1 << (32 - self.prefix)
+    }
+
+    pub fn contains(self, addr: Ipv4Addr) -> bool {
+        u32::from(addr) & mask(self.prefix) == u32::from(self.network)
+    }
+
+    /// Hosts probed when `local` is this machine's address.
+    pub fn count(self, local: Option<Ipv4Addr>) -> u32 {
+        self.size() - 2 - u32::from(local.is_some_and(|local| self.is_host(local)))
+    }
+
+    fn is_host(self, addr: Ipv4Addr) -> bool {
+        let base = u32::from(self.network);
+        let addr32 = u32::from(addr);
+        self.contains(addr) && addr32 != base && addr32 != base + self.size() - 1
+    }
+
+    /// Hosts without the network and broadcast addresses and `local`. The /24 that holds
+    /// `local` comes first, then its neighbors.
+    fn hosts(self, local: Option<Ipv4Addr>) -> impl Iterator<Item = Ipv4Addr> {
+        let base = u32::from(self.network);
+        let block_len = self.size().min(256);
+        let near = local
+            .filter(|&local| self.contains(local))
+            .map_or(0, |local| (u32::from(local) - base) / 256);
+        let mut blocks: Vec<u32> = (0..self.size() / block_len).collect();
+        blocks.sort_by_key(|block| block.abs_diff(near));
+        blocks
+            .into_iter()
+            .flat_map(move |block| (0..block_len).map(move |i| base + block * 256 + i))
+            .map(Ipv4Addr::from)
+            .filter(move |&addr| self.is_host(addr) && Some(addr) != local)
+    }
+}
+
+impl fmt::Display for Range {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.network, self.prefix)
+    }
+}
+
+fn mask(prefix: u8) -> u32 {
+    u32::MAX << (32 - u32::from(prefix))
+}
 
 #[derive(Clone, Debug)]
 pub struct Device {
@@ -80,24 +187,27 @@ impl Scanner {
         })
     }
 
-    pub fn start(&mut self, port: u16, wake: impl Fn() + Send + Sync + 'static) {
+    /// With `names`, devices are reverse-resolved after they are found.
+    pub fn start(
+        &mut self,
+        range: Range,
+        port: u16,
+        names: bool,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) {
         self.devices.clear();
         self.message = None;
-        let local = match local_ipv4() {
-            Ok(local) => local,
-            Err(error) => {
-                self.message = Some(format!("スキャンできません: {error}"));
-                return;
-            }
-        };
-        self.total = targets(local).count() as u32;
-        if self.total == 0 {
-            self.message = Some(format!("{local} はスキャン対象外です"));
-            return;
-        }
+        let local = own_address(range);
+        self.total = range.count(local);
         self.progress = Arc::default();
         self.scanning = true;
-        self.rx = Some(spawn(local, port, self.progress.clone(), Arc::new(wake)));
+        self.rx = Some(spawn(
+            range.hosts(local),
+            port,
+            names,
+            self.progress.clone(),
+            Arc::new(wake),
+        ));
     }
 
     /// Takes new results. Devices for which `keep` is false are dropped.
@@ -140,14 +250,14 @@ impl Scanner {
 }
 
 fn spawn(
-    local: Ipv4Addr,
+    mut addrs: impl Iterator<Item = Ipv4Addr> + Send + 'static,
     port: u16,
+    names: bool,
     progress: Arc<Progress>,
     wake: Arc<dyn Fn() + Send + Sync>,
 ) -> Receiver<Event> {
     let (tx, rx) = mpsc::channel();
     super::runtime().spawn(async move {
-        let mut addrs = targets(local);
         let mut tasks = JoinSet::new();
         let mut pace = tokio::time::interval(PROBE_INTERVAL);
         pace.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -175,7 +285,9 @@ fn spawn(
                             name: None,
                         }));
                         wake();
-                        tokio::spawn(lookup(tx, wake, addr));
+                        if names {
+                            tokio::spawn(lookup(tx, wake, addr));
+                        }
                     }
                 });
             }
@@ -198,41 +310,22 @@ async fn lookup(tx: Sender<Event>, wake: Arc<dyn Fn() + Send + Sync>, addr: Ipv4
     }
 }
 
+/// This machine's address inside `range`, if any interface has one.
+fn own_address(range: Range) -> Option<Ipv4Addr> {
+    super::netif::interfaces()
+        .into_iter()
+        .map(|interface| interface.addr)
+        .find(|&addr| range.contains(addr))
+}
+
 /// The address of the interface that holds the default route. No packet is sent.
-fn local_ipv4() -> std::io::Result<Ipv4Addr> {
+pub fn local_ipv4() -> std::io::Result<Ipv4Addr> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
     socket.connect((Ipv4Addr::new(192, 0, 2, 1), 9))?;
     match socket.local_addr()?.ip() {
         IpAddr::V4(ip) if !ip.is_unspecified() && !ip.is_loopback() => Ok(ip),
         _ => Err(std::io::Error::other("IPv4 アドレスがありません")),
     }
-}
-
-/// Third octets of `192.168.x.0/24` or `172.x.0.0/16` (`x` from `local`), nearest to `local` first.
-fn blocks(local: Ipv4Addr) -> Vec<u8> {
-    match local.octets() {
-        [192, 168, third, _] => vec![third],
-        [172, _, third, _] => {
-            let mut all: Vec<u8> = (0..=255).collect();
-            all.sort_by_key(|block| block.abs_diff(third));
-            all
-        }
-        _ => Vec::new(),
-    }
-}
-
-/// Hosts in `blocks`, without the network and broadcast addresses, and without `local`.
-fn targets(local: Ipv4Addr) -> impl Iterator<Item = Ipv4Addr> {
-    let blocks = blocks(local);
-    let host_mask: u32 = if blocks.len() == 1 { 0xff } else { 0xffff };
-    let [a, b, _, _] = local.octets();
-    blocks
-        .into_iter()
-        .flat_map(move |third| (0..=255).map(move |last| Ipv4Addr::new(a, b, third, last)))
-        .filter(move |addr| {
-            let host = u32::from(*addr) & host_mask;
-            *addr != local && host != 0 && host != host_mask
-        })
 }
 
 #[cfg(any(windows, target_os = "linux"))]
@@ -333,26 +426,70 @@ mod tests {
     use super::*;
 
     #[test]
-    fn targets_follow_the_local_prefix() {
+    fn hosts_skip_network_broadcast_and_local() {
         let local = Ipv4Addr::new(192, 168, 1, 10);
-        let all: Vec<_> = targets(local).collect();
+        let range = Range::around(local, 24).unwrap();
+        let all: Vec<_> = range.hosts(Some(local)).collect();
         assert_eq!(all.len(), 253);
+        assert_eq!(range.count(Some(local)), 253);
         assert_eq!(all[0], Ipv4Addr::new(192, 168, 1, 1));
         assert_eq!(*all.last().unwrap(), Ipv4Addr::new(192, 168, 1, 254));
         assert!(!all.contains(&local));
 
         let local = Ipv4Addr::new(172, 24, 163, 106);
-        let all: Vec<_> = targets(local).collect();
+        let range = Range::around(local, 16).unwrap();
+        let all: Vec<_> = range.hosts(Some(local)).collect();
         assert_eq!(all.len(), (1 << 16) - 3);
+        assert_eq!(range.count(Some(local)), (1 << 16) - 3);
         assert_eq!(all[0], Ipv4Addr::new(172, 24, 163, 0));
         assert_eq!(all[255], Ipv4Addr::new(172, 24, 162, 0));
         assert!(!all.contains(&local));
         assert!(!all.contains(&Ipv4Addr::new(172, 24, 0, 0)));
         assert!(!all.contains(&Ipv4Addr::new(172, 24, 255, 255)));
         assert!(all.contains(&Ipv4Addr::new(172, 24, 255, 254)));
-        assert!(!all.contains(&Ipv4Addr::new(172, 0, 0, 1)));
 
-        assert_eq!(targets(Ipv4Addr::new(10, 1, 2, 3)).count(), 0);
+        let other = Range::parse("10.0.5.0/30").unwrap();
+        assert_eq!(other.count(Some(local)), 2);
+        let all: Vec<_> = other.hosts(Some(local)).collect();
+        assert_eq!(
+            all,
+            [Ipv4Addr::new(10, 0, 5, 1), Ipv4Addr::new(10, 0, 5, 2)]
+        );
+    }
+
+    #[test]
+    fn interface_choices_follow_its_prefix() {
+        let show = |addr: [u8; 4], prefix| -> Vec<String> {
+            Range::for_interface(Ipv4Addr::from(addr), prefix)
+                .iter()
+                .map(Range::to_string)
+                .collect()
+        };
+        assert_eq!(show([192, 168, 1, 100], 24), ["192.168.1.0/24"]);
+        assert_eq!(show([192, 168, 1, 100], 28), ["192.168.1.96/28"]);
+        assert_eq!(
+            show([172, 27, 48, 1], 20),
+            ["172.27.48.0/24", "172.27.48.0/20"]
+        );
+        assert_eq!(show([10, 1, 2, 3], 8), ["10.1.2.0/24", "10.1.0.0/16"]);
+        assert!(show([10, 10, 10, 117], 32).is_empty());
+        assert!(show([100, 81, 214, 2], 24).is_empty());
+    }
+
+    #[test]
+    fn range_accepts_only_private_networks() {
+        let range = Range::parse(" 192.168.1.77 / 24 ").unwrap();
+        assert_eq!(range.to_string(), "192.168.1.0/24");
+        assert_eq!(
+            Range::parse("172.31.0.0/16").unwrap().to_string(),
+            "172.31.0.0/16"
+        );
+        assert!(Range::parse("172.32.0.0/16").is_err());
+        assert!(Range::parse("8.8.8.0/24").is_err());
+        assert!(Range::parse("10.0.0.0/8").is_err());
+        assert!(Range::parse("192.168.1.0/31").is_err());
+        assert!(Range::parse("192.168.1.0").is_err());
+        assert!(Range::parse("192.168.1.0/x").is_err());
     }
 
     #[test]

@@ -214,6 +214,11 @@ impl Session {
         }
     }
 
+    /// Host name of the SSH server, read before the shell started.
+    pub fn login_host(&self) -> Option<String> {
+        self.shared.login_host()
+    }
+
     pub fn wants_cursor(&self, line: &str) -> bool {
         self.is_running_ssh() && crate::cursor::command(line).is_some()
     }

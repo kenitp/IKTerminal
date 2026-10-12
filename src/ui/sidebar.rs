@@ -128,7 +128,7 @@ fn lan_section(ui: &mut Ui, lan: &Lan, filter: &str) -> Option<SidebarAction> {
             if lan.scanner.scanning() {
                 ui.spinner();
             } else if flat_button(ui, "スキャン")
-                .on_hover_text("同じネットワークでポートが開いている機器を探す")
+                .on_hover_text("範囲を選び、ポートが開いている機器を探す")
                 .clicked()
             {
                 action = Some(SidebarAction::Scan);

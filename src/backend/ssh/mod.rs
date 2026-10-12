@@ -162,16 +162,20 @@ async fn connect(
         handle,
         _jumps: chain,
     };
-    read_login_dirs(&connection.handle, shared).await;
+    read_login_info(&connection.handle, shared).await;
     Ok(connection)
 }
 
-async fn read_login_dirs(handle: &Handle<Client>, shared: &Shared) {
+/// Home, working directory, and host name of a login shell, one per line.
+async fn read_login_info(handle: &Handle<Client>, shared: &Shared) {
     let Ok(mut channel) = handle.channel_open_session().await else {
         return;
     };
     if channel
-        .exec(true, r#"printf '%s\n%s\n' "$HOME" "$PWD""#)
+        .exec(
+            true,
+            r#"printf '%s\n%s\n%s\n' "$HOME" "$PWD" "$(hostname 2>/dev/null || uname -n)""#,
+        )
         .await
         .is_err()
     {
@@ -194,8 +198,13 @@ async fn read_login_dirs(handle: &Handle<Client>, shared: &Shared) {
     }
     let _ = channel.close().await;
     let text = String::from_utf8_lossy(&buf);
-    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
-    shared.set_login_dir(lines.next(), lines.next());
+    let mut lines = text.lines().map(str::trim);
+    let mut next = || lines.next().filter(|line| !line.is_empty());
+    let (home, cwd, host) = (next(), next(), next());
+    shared.set_login_dir(home, cwd);
+    if let Some(host) = host {
+        shared.set_login_host(host);
+    }
 }
 
 async fn run_shell(

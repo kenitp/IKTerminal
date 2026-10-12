@@ -76,6 +76,8 @@ pub struct Shared {
     io: OnceLock<Box<dyn PtyIo>>,
     prompts: Mutex<VecDeque<Prompt>>,
     remote: Mutex<RemoteDir>,
+    /// Host name reported by the SSH server's login shell.
+    login_host: OnceLock<String>,
 }
 
 impl Shared {
@@ -88,6 +90,7 @@ impl Shared {
             io: OnceLock::new(),
             prompts: Mutex::new(VecDeque::new()),
             remote: Mutex::new(RemoteDir::default()),
+            login_host: OnceLock::new(),
         })
     }
 
@@ -188,6 +191,23 @@ impl Shared {
         if changed {
             self.repaint();
         }
+    }
+
+    /// Ignores text that is not a DNS-style name (for example an unexpanded `$(hostname)`).
+    pub fn set_login_host(&self, host: &str) {
+        let host = host.trim();
+        let valid = !host.is_empty()
+            && host.len() <= 253
+            && host
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'));
+        if valid {
+            let _ = self.login_host.set(host.to_owned());
+        }
+    }
+
+    pub fn login_host(&self) -> Option<String> {
+        self.login_host.get().cloned()
     }
 
     pub fn set_remote_cwd(&self, path: &str) {
