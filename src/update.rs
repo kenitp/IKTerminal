@@ -297,29 +297,20 @@ fn powershell_command(
     all_users: bool,
     elevate: bool,
 ) -> String {
-    let dir_arg = format!("/DIR={directory}");
     let scope = if all_users {
         "/ALLUSERS"
     } else {
         "/CURRENTUSER"
     };
-    let args = [
-        "/VERYSILENT",
-        "/SUPPRESSMSGBOXES",
-        "/NORESTART",
-        dir_arg.as_str(),
-        scope,
-    ];
-    let arg_list = args
-        .iter()
-        .copied()
-        .map(ps_quote)
-        .collect::<Vec<_>>()
-        .join(",");
+    // Start-Process joins an -ArgumentList array with spaces without re-quoting elements, which
+    // would split a path with spaces. A single argument string keeps the quotes around /DIR.
+    let arguments =
+        format!(r#"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="{directory}" {scope}"#);
     let verb = if elevate { " -Verb RunAs" } else { "" };
     format!(
-        "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; Start-Process -FilePath {} -ArgumentList {arg_list}{verb}",
+        "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; Start-Process -FilePath {} -ArgumentList {}{verb}",
         ps_quote(installer),
+        ps_quote(&arguments),
     )
 }
 
@@ -900,8 +891,8 @@ mod tests {
             true,
         );
         assert!(command.contains(r"-FilePath 'C:\Temp\IkTerminal-0.2.0-setup.exe'"));
-        assert!(command.contains(r"'/DIR=C:\Program Files\IkTerminal'"));
-        assert!(command.contains("'/ALLUSERS'"));
+        assert!(command.contains(r#"/DIR="C:\Program Files\IkTerminal""#));
+        assert!(command.contains("/ALLUSERS"));
         assert!(command.contains("-Verb RunAs"));
         assert!(!command.contains(r"\\?\"));
     }
@@ -915,7 +906,7 @@ mod tests {
             false,
             false,
         );
-        assert!(command.contains("'/CURRENTUSER'"));
+        assert!(command.contains("/CURRENTUSER"));
         assert!(!command.contains("RunAs"));
         assert!(!command.contains("ALLUSERS"));
     }
