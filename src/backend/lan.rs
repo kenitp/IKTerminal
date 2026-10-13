@@ -14,6 +14,8 @@ use tokio::time::MissedTickBehavior;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
 const NAME_TIMEOUT: Duration = Duration::from_secs(3);
+/// A NetBIOS node status query waits this long for the single unicast reply.
+const NETBIOS_TIMEOUT: Duration = Duration::from_millis(800);
 /// Bursts of SYNs and ARP requests can make routers, VPNs, or IDS drop other connections.
 const PARALLEL: usize = 64;
 /// At most 200 probes per second.
@@ -380,10 +382,75 @@ fn spawn(
 
 /// The OS resolver may wait on NetBIOS or LLMNR for a long time, so the name is optional.
 async fn lookup(tx: Sender<Event>, wake: Arc<dyn Fn() + Send + Sync>, addr: Ipv4Addr) {
-    let resolve = tokio::task::spawn_blocking(move || reverse_name(addr));
+    let resolve = tokio::task::spawn_blocking(move || resolve_name(addr));
     if let Ok(Ok(Some(name))) = tokio::time::timeout(NAME_TIMEOUT, resolve).await {
         let _ = tx.send(Event::Named(addr, name));
         wake();
+    }
+}
+
+/// Private LANs rarely have a reverse DNS zone, so a NetBIOS node status query (one small
+/// unicast packet to UDP 137) usually finds Windows and Samba names where the OS resolver fails.
+fn resolve_name(addr: Ipv4Addr) -> Option<String> {
+    netbios_name(addr).or_else(|| reverse_name(addr))
+}
+
+/// One NetBIOS node status request to the host, parsing the first unique workstation name.
+fn netbios_name(addr: Ipv4Addr) -> Option<String> {
+    const NAME: [u8; 32] = *b"CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let mut query = Vec::with_capacity(50);
+    query.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+    query.push(NAME.len() as u8);
+    query.extend_from_slice(&NAME);
+    query.extend_from_slice(&[0x00, 0x00, 0x21, 0x00, 0x01]);
+
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.set_read_timeout(Some(NETBIOS_TIMEOUT)).ok()?;
+    socket.send_to(&query, (addr, 137)).ok()?;
+    let mut buf = [0u8; 512];
+    let (n, _) = socket.recv_from(&mut buf).ok()?;
+    parse_nbstat(&buf[..n])
+}
+
+/// Walk to the node status answer and return the first non-group name of the workstation service.
+fn parse_nbstat(buf: &[u8]) -> Option<String> {
+    if buf.len() < 12 || u16::from_be_bytes([buf[6], buf[7]]) == 0 {
+        return None;
+    }
+    let mut pos = skip_nb_name(buf, 12)? + 4;
+    pos = skip_nb_name(buf, pos)? + 10;
+    let count = *buf.get(pos)?;
+    pos += 1;
+    for _ in 0..count {
+        let entry = buf.get(pos..pos + 18)?;
+        pos += 18;
+        let group = u16::from_be_bytes([entry[16], entry[17]]) & 0x8000 != 0;
+        if entry[15] == 0x00 && !group {
+            let name: String = entry[..15]
+                .iter()
+                .take_while(|&&c| c != 0)
+                .map(|&c| c as char)
+                .collect();
+            let name = name.trim();
+            if !name.is_empty() {
+                return Some(name.to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// Length of a NetBIOS/DNS name starting at `pos`, following a compression pointer as its end.
+fn skip_nb_name(buf: &[u8], mut pos: usize) -> Option<usize> {
+    loop {
+        let len = *buf.get(pos)?;
+        if len & 0xC0 == 0xC0 {
+            return Some(pos + 2);
+        }
+        if len == 0 {
+            return Some(pos + 1);
+        }
+        pos += 1 + len as usize;
     }
 }
 
@@ -617,5 +684,27 @@ mod tests {
             ..device
         };
         assert_eq!(bare.alias(), "10.0.0.5");
+    }
+
+    #[test]
+    fn nbstat_takes_the_unique_workstation_name() {
+        let mut buf = vec![0, 0, 0x84, 0x00, 0, 1, 0, 1, 0, 0, 0, 0];
+        buf.push(0x20);
+        buf.extend_from_slice(b"CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        buf.extend_from_slice(&[0x00, 0x00, 0x21, 0x00, 0x01]);
+        buf.extend_from_slice(&[0xC0, 0x0C, 0x00, 0x21, 0x00, 0x01, 0, 0, 0, 0, 0x00, 0x37]);
+        buf.push(3);
+        let entry = |name: &[u8], suffix: u8, flags: u16| {
+            let mut e = [b' '; 18];
+            e[..name.len()].copy_from_slice(name);
+            e[15] = suffix;
+            e[16..].copy_from_slice(&flags.to_be_bytes());
+            e
+        };
+        buf.extend_from_slice(&entry(b"WORKGROUP", 0x00, 0x8400));
+        buf.extend_from_slice(&entry(b"MYPC", 0x20, 0x0400));
+        buf.extend_from_slice(&entry(b"MYPC", 0x00, 0x0400));
+        assert_eq!(parse_nbstat(&buf).as_deref(), Some("MYPC"));
+        assert_eq!(parse_nbstat(&buf[..12]), None);
     }
 }
