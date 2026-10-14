@@ -85,6 +85,14 @@ impl SshConfig {
         cfg
     }
 
+    /// Parses config text into a standalone config, ignoring `Include` files.
+    #[cfg(test)]
+    pub fn parse(text: &str) -> Self {
+        let mut cfg = SshConfig::default();
+        cfg.load_text(text, Condition::Always, MAX_INCLUDE_DEPTH);
+        cfg
+    }
+
     fn load_file(&mut self, path: &Path, condition: Condition, depth: usize) {
         if depth > MAX_INCLUDE_DEPTH {
             return;
@@ -92,6 +100,10 @@ impl SshConfig {
         let Ok(text) = std::fs::read_to_string(path) else {
             return;
         };
+        self.load_text(&text, condition, depth);
+    }
+
+    fn load_text(&mut self, text: &str, condition: Condition, depth: usize) {
         self.sections.push(Section {
             condition,
             options: Vec::new(),

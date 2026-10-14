@@ -53,8 +53,7 @@ struct PendingSave {
     draft: HostDraft,
 }
 
-const NEW_TAB: KeyboardShortcut =
-    KeyboardShortcut::new(Modifiers::CTRL.plus(Modifiers::SHIFT), Key::T);
+const NEW_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::T);
 const CLOSE_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::W);
 const PREV_TAB: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::CTRL.plus(Modifiers::SHIFT), Key::Tab);
@@ -92,6 +91,7 @@ struct Desk {
     notice: Option<String>,
     focus_terminal: bool,
     new_tab_menu: bool,
+    new_tab_sel: usize,
     /// Working directory for local shells opened in this window. `None` is the home directory.
     directory: Option<PathBuf>,
     window_title: String,
@@ -119,6 +119,7 @@ impl Desk {
             notice,
             focus_terminal: true,
             new_tab_menu: false,
+            new_tab_sel: 0,
             directory,
             window_title: String::new(),
             spawn: None,
@@ -747,6 +748,7 @@ impl App {
         let Some(target) = session.ssh_target().map(str::to_owned) else {
             return;
         };
+        let user = session.ssh_user().unwrap_or_default().to_owned();
         let session_id = session.id;
         let title = session.title();
         let dir = session.remote_dir();
@@ -754,7 +756,7 @@ impl App {
             return;
         };
         let hint = cursor::directory_hint(line, above, &title);
-        let host = cursor::remote_authority(&self.ssh_config, &target);
+        let host = cursor::remote_authority(&self.ssh_config, &target, &user);
         let resolved = cursor::resolve(&spec, hint.as_deref(), &dir);
         {
             let session = &self.desks[index].sessions[active];
@@ -842,8 +844,13 @@ impl App {
                 i.events
                     .retain(|event| !matches!(event, egui::Event::Text(text) if text == "\u{17}"));
             }
+            let new_tab = i.consume_shortcut(&NEW_TAB);
+            if new_tab {
+                i.events
+                    .retain(|event| !matches!(event, egui::Event::Text(text) if text == "\u{14}"));
+            }
             (
-                i.consume_shortcut(&NEW_TAB),
+                new_tab,
                 close_tab,
                 i.consume_shortcut(&PREV_TAB),
                 i.consume_shortcut(&NEXT_TAB),
@@ -851,6 +858,7 @@ impl App {
         });
         if new_tab {
             self.desks[index].new_tab_menu = !self.desks[index].new_tab_menu;
+            self.desks[index].new_tab_sel = 0;
         }
         if close_tab {
             self.close_tab(index, self.desks[index].active);
@@ -950,16 +958,18 @@ impl App {
         egui::Panel::top(panel_id(ui, "tabbar"))
             .frame(frame)
             .show(ui, |ui| {
+                let desk = &mut self.desks[index];
                 match tabbar::show(
                     ui,
                     tabbar::Bar {
                         tabs: &tabs,
-                        active: self.desks[index].active,
+                        active: desk.active,
                         sftp_available,
-                        sftp_open: self.desks[index].show_sftp && sftp_available,
+                        sftp_open: desk.show_sftp && sftp_available,
                         shells: &self.shells,
                         hosts: &self.hosts,
-                        menu_open: &mut self.desks[index].new_tab_menu,
+                        menu_open: &mut desk.new_tab_menu,
+                        menu_sel: &mut desk.new_tab_sel,
                     },
                 ) {
                     Some(TabAction::Select(tab)) => {

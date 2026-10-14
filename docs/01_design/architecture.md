@@ -160,7 +160,7 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 - **Bitwarden**: 設定が有効なときだけ、SSH 接続の直前にプロセスを確認する。未起動なら、インストーラ版は `Bitwarden.exe`、Microsoft Store 版は `shell:AppsFolder` のアプリ ID で起動し、`openssh-ssh-agent` のパイプを待ってから認証する。
 - **シリアル**: ポートの開閉は UI ではなく `backend::serial` が行う。失敗はダイアログに返し、成功したらタブを追加する。
 - **タスクトレイ**: 設定が有効なときだけアイコンを出す。閉じる要求は取り消し、ウィンドウを隠す。アイコンの操作は egui の再描画を起こしてから UI スレッドで処理する。「終了」はプロセスを終わらせる。更新は `Ver.Up` で行う。Linux は KSNI (D-Bus) で、GTK はリンクしない。
-- **`cursor`**: Enter の時点で SSH セッションのコマンド位置にある単独の `cursor` だけを捕まえる。Enter は送らず、行頭までの入力を消す。パスはプロンプト、OSC、`cd`、接続時の `pwd` の順で絶対パスにする。決まらなければ OSC 1337 で `$PWD` と `$HOME` を一度問い合わせる。起動引数は `cursor --folder-uri vscode-remote://ssh-remote+<ホスト><パス>`。ホストは config のエイリアスを優先する。
+- **`cursor`**: Enter の時点で SSH セッションのコマンド位置にある単独の `cursor` だけを捕まえる。Enter は送らず、行頭までの入力を消す。パスはプロンプト、OSC、`cd`、接続時の `pwd` の順で絶対パスにする。決まらなければ OSC 1337 で `$PWD` と `$HOME` を一度問い合わせる。起動引数は `cursor --folder-uri vscode-remote://ssh-remote+<ホスト><パス>`。アカウントは SSH セッションで認証したユーザーを使い、同じユーザーに解決できる config のエイリアスがあるときだけそれを再利用する。
 
 ## 6. ビルドと配布
 

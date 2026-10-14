@@ -17,6 +17,7 @@ pub struct TabInfo {
     pub status: Status,
 }
 
+#[derive(Clone, Copy)]
 pub enum TabAction {
     Select(usize),
     Close(usize),
@@ -46,6 +47,7 @@ pub struct Bar<'a> {
     pub shells: &'a [ShellSpec],
     pub hosts: &'a [HostEntry],
     pub menu_open: &'a mut bool,
+    pub menu_sel: &'a mut usize,
 }
 
 pub fn show(ui: &mut Ui, bar: Bar<'_>) -> Option<TabAction> {
@@ -57,6 +59,7 @@ pub fn show(ui: &mut Ui, bar: Bar<'_>) -> Option<TabAction> {
         shells,
         hosts,
         menu_open,
+        menu_sel,
     } = bar;
     let available = ui.available_rect_before_wrap();
     let bar = Rect::from_min_size(available.min, Vec2::new(available.width(), BAR_HEIGHT));
@@ -97,11 +100,12 @@ pub fn show(ui: &mut Ui, bar: Bar<'_>) -> Option<TabAction> {
                     action = Some(next);
                 }
             }
-            let plus = flat_button(ui, "+").on_hover_text("新しいタブ (Ctrl+Shift+T)");
+            let plus = flat_button(ui, "+").on_hover_text("新しいタブ (Ctrl+T)");
             if plus.clicked() {
                 *menu_open = !*menu_open;
+                *menu_sel = 0;
             }
-            new_tab_menu(&plus, shells, hosts, menu_open, &mut action);
+            new_tab_menu(&plus, shells, hosts, menu_open, menu_sel, &mut action);
 
             ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                 let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
@@ -228,28 +232,74 @@ fn new_tab_menu(
     shells: &[ShellSpec],
     hosts: &[HostEntry],
     menu_open: &mut bool,
+    menu_sel: &mut usize,
     action: &mut Option<TabAction>,
 ) {
+    // Selectable entries in display order: shells, serial, then SSH hosts.
+    let mut items: Vec<TabAction> = Vec::with_capacity(shells.len() + hosts.len() + 1);
+    items.extend((0..shells.len()).map(TabAction::OpenLocal));
+    items.push(TabAction::OpenSerial);
+    items.extend((0..hosts.len()).map(TabAction::OpenSsh));
+    let count = items.len();
+
     egui::Popup::menu(plus)
         .open_bool(menu_open)
         .width(240.0)
         .show(|ui| {
+            *menu_sel = (*menu_sel).min(count - 1);
+            let (up, down, enter, escape) = ui.input(|i| {
+                (
+                    i.key_pressed(egui::Key::ArrowUp),
+                    i.key_pressed(egui::Key::ArrowDown),
+                    i.key_pressed(egui::Key::Enter),
+                    i.key_pressed(egui::Key::Escape),
+                )
+            });
+            if down {
+                *menu_sel = (*menu_sel + 1) % count;
+            }
+            if up {
+                *menu_sel = (*menu_sel + count - 1) % count;
+            }
+            if escape {
+                ui.close();
+                return;
+            }
+            if enter {
+                *action = Some(items[*menu_sel]);
+                ui.close();
+                return;
+            }
+
+            let moved = up || down;
+            // `idx` tracks the running position of the selectable entry being drawn.
+            let mut idx = 0usize;
+            let mut entry = |ui: &mut Ui, label: &str, hover: Option<&str>| {
+                let selected = idx == *menu_sel;
+                let mut response = ui.selectable_label(selected, label);
+                if let Some(text) = hover {
+                    response = response.on_hover_text(text);
+                }
+                if selected && moved {
+                    response.scroll_to_me(None);
+                }
+                idx += 1;
+                response.clicked()
+            };
+
             ui.label(
                 egui::RichText::new("ローカル")
                     .size(11.0)
                     .color(theme::TEXT_DIM)
                     .strong(),
             );
-            if shells.is_empty() {
-                ui.label(egui::RichText::new("シェルがありません").color(theme::TEXT_DIM));
-            }
             for (i, shell) in shells.iter().enumerate() {
-                if ui.button(&shell.name).clicked() {
+                if entry(ui, &shell.name, None) {
                     *action = Some(TabAction::OpenLocal(i));
                 }
             }
             ui.separator();
-            if ui.button("シリアル (COM)").clicked() {
+            if entry(ui, "シリアル (COM)", None) {
                 *action = Some(TabAction::OpenSerial);
             }
             ui.separator();
@@ -266,11 +316,15 @@ fn new_tab_menu(
                         ui.label(egui::RichText::new("ホストがありません").color(theme::TEXT_DIM));
                     }
                     for (i, host) in hosts.iter().enumerate() {
-                        if ui.button(&host.alias).on_hover_text(&host.detail).clicked() {
+                        if entry(ui, &host.alias, Some(&host.detail)) {
                             *action = Some(TabAction::OpenSsh(i));
                         }
                     }
                 });
+
+            if action.is_some() {
+                ui.close();
+            }
         });
 }
 

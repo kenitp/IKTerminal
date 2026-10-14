@@ -39,8 +39,15 @@ impl DirectoryState {
 
 pub enum Kind {
     Local,
-    Ssh { target: String, sftp: SftpClient },
-    Serial { port: String, baud: u32 },
+    Ssh {
+        target: String,
+        user: String,
+        sftp: SftpClient,
+    },
+    Serial {
+        port: String,
+        baud: u32,
+    },
 }
 
 pub struct Session {
@@ -111,6 +118,7 @@ impl Session {
         password: Option<String>,
     ) -> Self {
         let host = config.resolve(target);
+        let user = host.user.clone();
         let jumps = host.proxy_jump.iter().map(|j| config.resolve(j)).collect();
         let (shared, term, _) = Self::create(ctx, settings, host.alias.clone());
         let link = ssh::spawn(
@@ -126,6 +134,7 @@ impl Session {
             id,
             kind: Kind::Ssh {
                 target: target.to_owned(),
+                user,
                 sftp,
             },
             term,
@@ -210,6 +219,14 @@ impl Session {
     pub fn ssh_target(&self) -> Option<&str> {
         match &self.kind {
             Kind::Ssh { target, .. } => Some(target),
+            Kind::Local | Kind::Serial { .. } => None,
+        }
+    }
+
+    /// Account name authenticated for this SSH session.
+    pub fn ssh_user(&self) -> Option<&str> {
+        match &self.kind {
+            Kind::Ssh { user, .. } => Some(user),
             Kind::Local | Kind::Serial { .. } => None,
         }
     }

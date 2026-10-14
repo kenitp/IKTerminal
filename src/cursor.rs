@@ -93,31 +93,24 @@ pub fn resolve(spec: &str, hint: Option<&str>, dir: &RemoteDir) -> Result<String
 
 /// Host string Cursor Remote-SSH passes to OpenSSH.
 ///
-/// A config alias wins, so port, user, key and ProxyJump come from `~/.ssh/config`.
-pub fn remote_authority(config: &SshConfig, target: &str) -> String {
-    let hosts = config.hosts();
-    if let Some(entry) = hosts
-        .iter()
-        .find(|entry| entry.alias.eq_ignore_ascii_case(target))
-    {
-        return entry.alias.clone();
-    }
+/// `user` is the account authenticated by the live session, so it always wins.
+/// A config alias is reused only when it resolves to that same account, letting
+/// port, key and ProxyJump come from `~/.ssh/config`; otherwise the hostname and
+/// user are spelled out so Cursor connects as the session account.
+pub fn remote_authority(config: &SshConfig, target: &str, user: &str) -> String {
     let resolved = config.resolve(target);
-    if let Some(entry) = hosts.iter().find(|entry| {
+    if let Some(entry) = config.hosts().iter().find(|entry| {
         let host = config.resolve(&entry.alias);
         host.hostname.eq_ignore_ascii_case(&resolved.hostname)
             && host.port == resolved.port
-            && host.user.eq_ignore_ascii_case(&resolved.user)
+            && host.user.eq_ignore_ascii_case(user)
     }) {
         return entry.alias.clone();
     }
-    if !target.contains('@') && !target.contains(':') {
-        return target.to_owned();
-    }
     if resolved.port == 22 {
-        format!("{}@{}", resolved.user, resolved.hostname)
+        format!("{user}@{}", resolved.hostname)
     } else {
-        format!("{}@{}:{}", resolved.user, resolved.hostname, resolved.port)
+        format!("{user}@{}:{}", resolved.hostname, resolved.port)
     }
 }
 
@@ -588,13 +581,20 @@ mod tests {
     }
 
     #[test]
-    fn authority_keeps_quick_connect() {
+    fn authority_spells_out_session_user() {
         let config = SshConfig::default();
-        assert_eq!(remote_authority(&config, "web"), "web");
-        assert_eq!(remote_authority(&config, "alice@web"), "alice@web");
+        assert_eq!(remote_authority(&config, "web", "alice"), "alice@web");
+        assert_eq!(remote_authority(&config, "alice@web", "alice"), "alice@web");
         assert_eq!(
-            remote_authority(&config, "alice@web:2200"),
+            remote_authority(&config, "web:2200", "alice"),
             "alice@web:2200"
         );
+    }
+
+    #[test]
+    fn authority_reuses_alias_only_for_matching_user() {
+        let config = SshConfig::parse("Host box\n  HostName 10.0.0.5\n  User alice\n");
+        assert_eq!(remote_authority(&config, "box", "alice"), "box");
+        assert_eq!(remote_authority(&config, "box", "bob"), "bob@10.0.0.5");
     }
 }
