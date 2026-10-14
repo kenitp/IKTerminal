@@ -286,3 +286,19 @@ Priority: optional
 Description: Lightweight terminal with SSH/SFTP
  Tabbed terminal emulator with local shells, SSH, and SFTP.
 
+Package: ikterminal
+Version: 0.3.2
+Architecture: amd64
+Maintainer: IkTerminal <https://github.com/kenitp/IKTerminal>
+Installed-Size: 13032
+Depends: libxcb1, libxkbcommon0, libxkbcommon-x11-0, libgl1
+Filename: pool/main/ikterminal_0.3.2_amd64.deb
+Size: 5059198
+MD5sum: 6e7da30d36e790ab786511312ad23520
+SHA1: a63212889a0153e6b67a1ca475373c0e2147168a
+SHA256: 3fecef2b524d8d4dc335395fb7409322b89c7c94de2be7fb9cfbaf24757d40f4
+Section: utils
+Priority: optional
+Description: Lightweight terminal with SSH/SFTP
+ Tabbed terminal emulator with local shells, SSH, and SFTP.
+

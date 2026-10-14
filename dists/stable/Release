@@ -5,12 +5,12 @@ Codename: stable
 Architectures: amd64
 Components: main
 Description: IkTerminal apt repository
-Date: Wed, 14 Oct 2026 14:09:40 +0000
+Date: Wed, 14 Oct 2026 15:26:50 +0000
 MD5Sum:
- b2362602d6fbac1023159b5e50c1d1f3    10152 main/binary-amd64/Packages
- 5294b8d5669429b45f185d94fe7d67a3     2187 main/binary-amd64/Packages.gz
+ 2b83ecc8e2a7a5897ecc71c5add25fee    10716 main/binary-amd64/Packages
+ aca5888bd0649fd8dc313312c575f675     2289 main/binary-amd64/Packages.gz
  19726b6a0706e77ffd0ed8cec58c66b3       89 main/binary-amd64/Release
 SHA256:
- 44cb64e9bb0ee2b691c1961381a92ed228960bca266c99f9c16ae503cf9dee37    10152 main/binary-amd64/Packages
- 0b4613336ec90f40f61ad090227a27be938558168345193cd09d5201064291fe     2187 main/binary-amd64/Packages.gz
+ 098cad9a81db876b18ab92d4cf3b829ffdca56f0a53f401c685b0394d58164d0    10716 main/binary-amd64/Packages
+ bb6ed6bf197f1fc28a6f33e97864cbbbf240439cf58d7e4542aff3ee81454eb1     2289 main/binary-amd64/Packages.gz
  f57912a7f0c45bf654e62f2e384c7e6b5888c1edf7cbb8777df1e243da32106a       89 main/binary-amd64/Release
