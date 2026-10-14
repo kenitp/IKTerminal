@@ -38,6 +38,7 @@ pub enum TabAction {
 const BAR_HEIGHT: f32 = 36.0;
 const TAB_HEIGHT: f32 = 30.0;
 const TAB_MAX_WIDTH: f32 = 200.0;
+const MENU_WIDTH: f32 = 240.0;
 
 pub struct Bar<'a> {
     pub tabs: &'a [TabInfo],
@@ -244,15 +245,17 @@ fn new_tab_menu(
 
     egui::Popup::menu(plus)
         .open_bool(menu_open)
-        .width(240.0)
+        .width(MENU_WIDTH)
         .show(|ui| {
+            // The area keeps the previous frame's minimum width.
+            ui.set_min_width(MENU_WIDTH);
             *menu_sel = (*menu_sel).min(count - 1);
-            let (up, down, enter, escape) = ui.input(|i| {
+            let (up, down, enter, escape) = ui.input_mut(|i| {
                 (
-                    i.key_pressed(egui::Key::ArrowUp),
-                    i.key_pressed(egui::Key::ArrowDown),
-                    i.key_pressed(egui::Key::Enter),
-                    i.key_pressed(egui::Key::Escape),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
                 )
             });
             if down {
@@ -261,22 +264,16 @@ fn new_tab_menu(
             if up {
                 *menu_sel = (*menu_sel + count - 1) % count;
             }
-            if escape {
-                ui.close();
-                return;
-            }
-            if enter {
-                *action = Some(items[*menu_sel]);
-                ui.close();
-                return;
-            }
 
             let moved = up || down;
             // `idx` tracks the running position of the selectable entry being drawn.
             let mut idx = 0usize;
             let mut entry = |ui: &mut Ui, label: &str, hover: Option<&str>| {
                 let selected = idx == *menu_sel;
-                let mut response = ui.selectable_label(selected, label);
+                let mut response = ui.add(
+                    egui::Button::selectable(selected, label)
+                        .min_size(Vec2::new(ui.available_width(), 0.0)),
+                );
                 if let Some(text) = hover {
                     response = response.on_hover_text(text);
                 }
@@ -311,6 +308,7 @@ fn new_tab_menu(
             );
             egui::ScrollArea::vertical()
                 .max_height(280.0)
+                .auto_shrink([false, true])
                 .show(ui, |ui| {
                     if hosts.is_empty() {
                         ui.label(egui::RichText::new("ホストがありません").color(theme::TEXT_DIM));
@@ -322,7 +320,10 @@ fn new_tab_menu(
                     }
                 });
 
-            if action.is_some() {
+            if escape || enter || action.is_some() {
+                if enter && action.is_none() {
+                    *action = Some(items[*menu_sel]);
+                }
                 ui.close();
             }
         });
