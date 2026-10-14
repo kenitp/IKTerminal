@@ -596,29 +596,33 @@ impl App {
         };
         self.update_check = None;
         #[cfg(debug_assertions)]
-        let message = match check {
-            Check::Skipped => "デバッグビルドでは確認しません".to_owned(),
+        let (message, ready) = match check {
+            Check::Skipped => ("デバッグビルドでは確認しません".to_owned(), false),
         };
         #[cfg(not(debug_assertions))]
-        let message = match check {
+        let (message, ready) = match check {
             Check::UpToDate => match &self.update {
-                Some(update) => {
+                Some(update) => (
                     format!(
                         "IkTerminal {} があります。Ver.Up で更新します",
                         update.version
-                    )
-                }
-                None => "最新です".to_owned(),
+                    ),
+                    true,
+                ),
+                None => ("最新です".to_owned(), false),
             },
             Check::Ready(staged) => {
                 let version = staged.version.clone();
                 self.arm_update(staged);
-                format!("IkTerminal {version} があります。Ver.Up で更新します")
+                (
+                    format!("IkTerminal {version} があります。Ver.Up で更新します"),
+                    true,
+                )
             }
-            Check::Failed => "確認できませんでした".to_owned(),
+            Check::Failed => ("確認できませんでした".to_owned(), false),
         };
         if let Some(dialog) = &mut self.settings_dialog {
-            dialog.finish_update_check(message);
+            dialog.finish_update_check(message, ready);
         }
     }
 
@@ -1258,6 +1262,10 @@ impl App {
                     self.desks[index].focus_terminal = true;
                 }
                 Some(SettingsResult::CheckUpdate) => self.request_update_check(ctx),
+                Some(SettingsResult::ApplyUpdate) => {
+                    self.settings_dialog = None;
+                    self.start_update(ctx);
+                }
                 None => {}
             }
         }

@@ -11,12 +11,14 @@ pub enum SettingsResult {
     Saved(Settings),
     Closed,
     CheckUpdate,
+    ApplyUpdate,
 }
 
 pub struct SettingsDialog {
     draft: Settings,
     error: Option<String>,
     checking_update: bool,
+    update_ready: bool,
     update_message: Option<String>,
 }
 
@@ -26,12 +28,14 @@ impl SettingsDialog {
             draft: settings.clone(),
             error: None,
             checking_update: false,
+            update_ready: false,
             update_message: None,
         }
     }
 
-    pub fn finish_update_check(&mut self, message: String) {
+    pub fn finish_update_check(&mut self, message: String, ready: bool) {
         self.checking_update = false;
+        self.update_ready = ready;
         self.update_message = Some(message);
     }
 
@@ -153,8 +157,12 @@ impl SettingsDialog {
                     .clicked()
                 {
                     self.checking_update = true;
+                    self.update_ready = false;
                     self.update_message = Some("確認しています".to_owned());
                     result = Some(SettingsResult::CheckUpdate);
+                }
+                if self.update_ready && primary_button(ui, "Ver.Up").clicked() {
+                    result = Some(SettingsResult::ApplyUpdate);
                 }
             });
             if let Some(message) = &self.update_message {
