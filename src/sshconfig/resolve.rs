@@ -44,13 +44,17 @@ impl Condition {
             Condition::Always => true,
             Condition::Never => false,
             Condition::Hosts(patterns) => {
+                let host = host.to_ascii_lowercase();
                 let mut matched = false;
-                for p in patterns {
-                    if let Some(neg) = p.strip_prefix('!') {
-                        if wildcard_match(neg, host) {
+                for pattern in patterns {
+                    let (negated, pattern) = match pattern.strip_prefix('!') {
+                        Some(rest) => (true, rest),
+                        None => (false, pattern.as_str()),
+                    };
+                    if wildcard_match(&pattern.to_ascii_lowercase(), &host) {
+                        if negated {
                             return false;
                         }
-                    } else if wildcard_match(p, host) {
                         matched = true;
                     }
                 }
@@ -115,10 +119,7 @@ impl SshConfig {
             let key = key.to_ascii_lowercase();
             match key.as_str() {
                 "host" => {
-                    let patterns = split_args(value)
-                        .into_iter()
-                        .map(|p| p.to_ascii_lowercase())
-                        .collect();
+                    let patterns = split_args(value);
                     self.sections.push(Section {
                         condition: Condition::Hosts(patterns),
                         options: Vec::new(),
@@ -276,7 +277,10 @@ impl SshConfig {
 fn cmp_alias(left: &str, right: &str) -> Ordering {
     match (left.parse::<IpAddr>(), right.parse::<IpAddr>()) {
         (Ok(left), Ok(right)) => left.cmp(&right),
-        _ => left.cmp(right),
+        _ => left
+            .to_ascii_lowercase()
+            .cmp(&right.to_ascii_lowercase())
+            .then_with(|| left.cmp(right)),
     }
 }
 
@@ -447,7 +451,14 @@ mod tests {
     fn host_list_is_sorted_by_alias() {
         let cfg = config("Host zeta\nHost Alpha\nHost mid\n");
         let names: Vec<_> = cfg.hosts().into_iter().map(|host| host.alias).collect();
-        assert_eq!(names, ["alpha", "mid", "zeta"]);
+        assert_eq!(names, ["Alpha", "mid", "zeta"]);
+    }
+
+    #[test]
+    fn host_alias_keeps_config_spelling() {
+        let cfg = config("Host Ikeda-Ubuntu-PC\n  HostName 192.168.1.110\n  User kenichi\n");
+        assert_eq!(cfg.hosts()[0].alias, "Ikeda-Ubuntu-PC");
+        assert_eq!(cfg.resolve("ikeda-ubuntu-pc").user, "kenichi");
     }
 
     #[test]

@@ -596,5 +596,11 @@ mod tests {
         let config = SshConfig::parse("Host box\n  HostName 10.0.0.5\n  User alice\n");
         assert_eq!(remote_authority(&config, "box", "alice"), "box");
         assert_eq!(remote_authority(&config, "box", "bob"), "bob@10.0.0.5");
+        let config =
+            SshConfig::parse("Host Ikeda-Ubuntu-PC\n  HostName 192.168.1.110\n  User kenichi\n");
+        assert_eq!(
+            remote_authority(&config, "ikeda-ubuntu-pc", "kenichi"),
+            "Ikeda-Ubuntu-PC"
+        );
     }
 }
