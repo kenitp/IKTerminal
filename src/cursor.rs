@@ -91,39 +91,68 @@ pub fn resolve(spec: &str, hint: Option<&str>, dir: &RemoteDir) -> Result<String
     }
 }
 
-/// Host string Cursor Remote-SSH passes to OpenSSH.
+/// Remote-SSH authority: hex of `{"hostName","user","port"}`, the form Cursor itself writes.
 ///
-/// `user` is the account authenticated by the live session, so it always wins.
-/// A config alias is reused only when it resolves to that same account, letting
-/// port, key and ProxyJump come from `~/.ssh/config`; otherwise the hostname and
-/// user are spelled out so Cursor connects as the session account.
+/// `user` is the account the live session authenticated and is always written,
+/// so Cursor never falls back to `User` in the config or the local account.
+/// The host is the session's config alias, or one resolving to the same host,
+/// port and account, so keys and ProxyJump still come from `~/.ssh/config`;
+/// otherwise it is the hostname with its port.
 pub fn remote_authority(config: &SshConfig, target: &str, user: &str) -> String {
     let resolved = config.resolve(target);
-    if let Some(entry) = config.hosts().iter().find(|entry| {
-        let host = config.resolve(&entry.alias);
-        host.hostname.eq_ignore_ascii_case(&resolved.hostname)
-            && host.port == resolved.port
-            && host.user.eq_ignore_ascii_case(user)
-    }) {
-        return entry.alias.clone();
+    let hosts = config.hosts();
+    let alias = hosts
+        .iter()
+        .find(|entry| entry.alias.eq_ignore_ascii_case(&resolved.alias))
+        .or_else(|| {
+            hosts.iter().find(|entry| {
+                let host = config.resolve(&entry.alias);
+                host.hostname.eq_ignore_ascii_case(&resolved.hostname)
+                    && host.port == resolved.port
+                    && host.user.eq_ignore_ascii_case(user)
+            })
+        });
+    let (host, port) = match alias {
+        Some(entry) => (entry.alias.as_str(), None),
+        None => (
+            resolved.hostname.as_str(),
+            (resolved.port != 22).then_some(resolved.port),
+        ),
+    };
+    let mut json = format!(
+        r#"{{"hostName":"{}","user":"{}""#,
+        json_escape(host),
+        json_escape(user)
+    );
+    if let Some(port) = port {
+        json.push_str(&format!(r#","port":{port}"#));
     }
-    if resolved.port == 22 {
-        format!("{user}@{}", resolved.hostname)
-    } else {
-        format!("{user}@{}:{}", resolved.hostname, resolved.port)
-    }
+    json.push('}');
+    json.bytes().map(|byte| format!("{byte:02x}")).collect()
 }
 
-pub fn folder_uri(host: &str, path: &str) -> String {
+pub fn folder_uri(authority: &str, path: &str) -> String {
     format!(
-        "vscode-remote://ssh-remote+{}{}",
-        encode_host(host),
+        "vscode-remote://ssh-remote+{authority}{}",
         encode_path(path)
     )
 }
 
-pub fn launch(host: &str, path: &str) -> Result<(), String> {
-    let uri = folder_uri(host, path);
+fn json_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+pub fn launch(authority: &str, path: &str) -> Result<(), String> {
+    let uri = folder_uri(authority, path);
     let mut command = cursor_command(&uri)?;
     command
         .stdin(Stdio::null())
@@ -399,20 +428,11 @@ fn split_drive(path: &str) -> (Option<String>, &str) {
     (None, path)
 }
 
-fn encode_host(host: &str) -> String {
-    encode(host, false)
-}
-
 fn encode_path(path: &str) -> String {
-    encode(path, true)
-}
-
-fn encode(text: &str, keep_slash: bool) -> String {
-    let mut out = String::with_capacity(text.len());
-    for byte in text.bytes() {
-        let plain = byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'.' | b'_' | b'~')
-            || (keep_slash && byte == b'/');
+    let mut out = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        let plain =
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/');
         if plain {
             out.push(byte as char);
         } else {
@@ -568,39 +588,51 @@ mod tests {
         assert!(!note_cd("user@host:~$ cd /tmp && ls", &mut dir));
     }
 
+    fn authority_json(config: &SshConfig, target: &str, user: &str) -> String {
+        let hex = remote_authority(config, target, user);
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        String::from_utf8(bytes).unwrap()
+    }
+
     #[test]
-    fn folder_uri_encodes_host_and_path() {
+    fn folder_uri_encodes_path() {
         assert_eq!(
-            folder_uri("lab", "/home/user/app"),
-            "vscode-remote://ssh-remote+lab/home/user/app"
-        );
-        assert_eq!(
-            folder_uri("alice@lab:2200", "/home/my app"),
-            "vscode-remote://ssh-remote+alice%40lab%3A2200/home/my%20app"
+            folder_uri("7b7d", "/home/my app"),
+            "vscode-remote://ssh-remote+7b7d/home/my%20app"
         );
     }
 
     #[test]
-    fn authority_spells_out_session_user() {
+    fn authority_always_names_session_user() {
         let config = SshConfig::default();
-        assert_eq!(remote_authority(&config, "web", "alice"), "alice@web");
-        assert_eq!(remote_authority(&config, "alice@web", "alice"), "alice@web");
         assert_eq!(
-            remote_authority(&config, "web:2200", "alice"),
-            "alice@web:2200"
+            authority_json(&config, "web", "alice"),
+            r#"{"hostName":"web","user":"alice"}"#
+        );
+        assert_eq!(
+            authority_json(&config, "alice@web:2200", "alice"),
+            r#"{"hostName":"web","user":"alice","port":2200}"#
         );
     }
 
     #[test]
-    fn authority_reuses_alias_only_for_matching_user() {
-        let config = SshConfig::parse("Host box\n  HostName 10.0.0.5\n  User alice\n");
-        assert_eq!(remote_authority(&config, "box", "alice"), "box");
-        assert_eq!(remote_authority(&config, "box", "bob"), "bob@10.0.0.5");
+    fn authority_reuses_config_alias() {
         let config =
             SshConfig::parse("Host Ikeda-Ubuntu-PC\n  HostName 192.168.1.110\n  User kenichi\n");
         assert_eq!(
-            remote_authority(&config, "ikeda-ubuntu-pc", "kenichi"),
-            "Ikeda-Ubuntu-PC"
+            authority_json(&config, "ikeda-ubuntu-pc", "kenichi"),
+            r#"{"hostName":"Ikeda-Ubuntu-PC","user":"kenichi"}"#
+        );
+        assert_eq!(
+            authority_json(&config, "kenichi@192.168.1.110", "kenichi"),
+            r#"{"hostName":"Ikeda-Ubuntu-PC","user":"kenichi"}"#
+        );
+        assert_eq!(
+            authority_json(&config, "root@192.168.1.110", "root"),
+            r#"{"hostName":"192.168.1.110","user":"root"}"#
         );
     }
 }

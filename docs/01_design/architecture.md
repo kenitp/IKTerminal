@@ -67,7 +67,7 @@ app (オーケストレーション: タブ、ダイアログ、ショートカ�
 | `backend/ssh/mod.rs` | 接続 (ProxyJump の連鎖)、シェルチャネルの入出力ループ |
 | `backend/ssh/handler.rs` | ホスト鍵検証 (known_hosts) |
 | `backend/ssh/known_hosts.rs` | 変わったホスト鍵の行を除き、新しい鍵を足す |
-| `backend/ssh/auth.rs` | 認証の順序制御 (渡されたパスワードを最初に試す) |
+| `backend/ssh/auth.rs` | 認証の順序制御 (渡されたパスワードを最初に試す)。ユーザーが未定ならユーザー名を尋ね、ローカルのアカウント名は使わない。受け入れられたアカウントを返す |
 | `backend/ssh/probe.rs` | パスワードだけでログインできるかの確認。シェルは開かず、`known_hosts` は変えない |
 | `backend/sftp.rs` | `SftpClient`: 一覧、操作、転送 (再帰・進捗・中止) |
 | `sshconfig/resolve.rs` | `SshConfig`: Include / Host / Match all の解決。ホスト一覧はエイリアス名の昇順 (大文字小文字は区別しない)。表記は config のまま。IP アドレスは数値順 |
@@ -117,7 +117,7 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 2. 各ホップについて次を行う。
    - TCP 接続 (2 段目以降は前段の `direct-tcpip` チャネル) を `ConnectTimeout` 以内に確立する。
    - ハンドシェイクを行う。ホスト鍵の確認はユーザー応答を待つため、タイムアウトの対象外とする。
-   - 認証する。
+   - 認証する。対象ホストで受け入れられたアカウントを `Shared::login_user` に入れる。
 3. シェルの前に exec チャネルで `$HOME`、`$PWD`、`hostname` (無ければ `uname -n`) を 1 行ずつ読む (2 秒で打ち切り)。ディレクトリは `RemoteDir` に、ホスト名は DNS 名の文字だけのときに `Shared::login_host` に入れる。
 4. PTY を要求してシェルを起動し、入出力ループに入る。
 5. 確立した接続は `Link` (`OnceLock`) で公開し、SFTP が同じ接続上に別チャネルを開く。
@@ -160,7 +160,7 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
 - **Bitwarden**: 設定が有効なときだけ、SSH 接続の直前にプロセスを確認する。未起動なら、インストーラ版は `Bitwarden.exe`、Microsoft Store 版は `shell:AppsFolder` のアプリ ID で起動し、`openssh-ssh-agent` のパイプを待ってから認証する。
 - **シリアル**: ポートの開閉は UI ではなく `backend::serial` が行う。失敗はダイアログに返し、成功したらタブを追加する。
 - **タスクトレイ**: 設定が有効なときだけアイコンを出す。閉じる要求は取り消し、ウィンドウを隠す。アイコンの操作は egui の再描画を起こしてから UI スレッドで処理する。「終了」はプロセスを終わらせる。更新は `Ver.Up` で行う。Linux は KSNI (D-Bus) で、GTK はリンクしない。
-- **`cursor`**: Enter の時点で SSH セッションのコマンド位置にある単独の `cursor` だけを捕まえる。Enter は送らず、行頭までの入力を消す。パスはプロンプト、OSC、`cd`、接続時の `pwd` の順で絶対パスにする。決まらなければ OSC 1337 で `$PWD` と `$HOME` を一度問い合わせる。起動引数は `cursor --folder-uri vscode-remote://ssh-remote+<ホスト><パス>`。アカウントは SSH セッションで認証したユーザーを使い、同じユーザーに解決できる config のエイリアスがあるときだけそれを再利用する。エイリアスは config の表記のまま渡す。
+- **`cursor`**: Enter の時点で SSH セッションのコマンド位置にある単独の `cursor` だけを捕まえる。Enter は送らず、行頭までの入力を消す。パスはプロンプト、OSC、`cd`、接続時の `pwd` の順で絶対パスにする。決まらなければ OSC 1337 で `$PWD` と `$HOME` を一度問い合わせる。起動引数は `cursor --folder-uri vscode-remote://ssh-remote+<接続先><パス>`。接続先は `{"hostName","user","port"}` の JSON の 16 進で、Cursor の Remote-SSH が自分で書く形式と同じ。`user` には `Shared::login_user` (サーバーが受け入れたアカウント) を必ず入れる。`hostName` はセッションの config エイリアス、または同じホスト名・ポート・ユーザーに解決できるエイリアスを config の表記のまま使い、無ければホスト名と `port` を入れる。
 
 ## 6. ビルドと配布
 

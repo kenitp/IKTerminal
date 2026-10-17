@@ -16,6 +16,7 @@ pub struct HostConfig {
     pub alias: String,
     pub hostname: String,
     pub port: u16,
+    /// Empty when neither the target nor the config names an account.
     pub user: String,
     pub identity_files: Vec<PathBuf>,
     pub identities_only: bool,
@@ -171,11 +172,13 @@ impl SshConfig {
                 }
                 seen.push(p.clone());
                 let cfg = self.resolve(p);
-                let detail = if cfg.port == 22 {
-                    format!("{}@{}", cfg.user, cfg.hostname)
-                } else {
-                    format!("{}@{}:{}", cfg.user, cfg.hostname, cfg.port)
-                };
+                let mut detail = cfg.hostname.clone();
+                if !cfg.user.is_empty() {
+                    detail = format!("{}@{detail}", cfg.user);
+                }
+                if cfg.port != 22 {
+                    detail = format!("{detail}:{}", cfg.port);
+                }
                 out.push(HostEntry {
                     alias: p.clone(),
                     detail,
@@ -234,7 +237,7 @@ impl SshConfig {
             .unwrap_or(22);
         let user = user_override
             .or_else(|| opts.get("user").map(|u| u.to_string()))
-            .unwrap_or_else(local_user);
+            .unwrap_or_default();
         let identity_files = identity_files
             .into_iter()
             .filter(|f| !f.eq_ignore_ascii_case("none"))
@@ -445,6 +448,7 @@ mod tests {
         assert!(cfg.contains_target("10.0.0.1", Some("alice"), 2200));
         assert!(!cfg.contains_target("10.0.0.1", Some("carol"), 2200));
         assert!(!cfg.contains_target("other", None, 22));
+        assert_eq!(SshConfig::parse("Host nas\n").resolve("nas").user, "");
     }
 
     #[test]

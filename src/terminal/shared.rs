@@ -78,6 +78,8 @@ pub struct Shared {
     remote: Mutex<RemoteDir>,
     /// Host name reported by the SSH server's login shell.
     login_host: OnceLock<String>,
+    /// Account the SSH server accepted.
+    login_user: OnceLock<String>,
 }
 
 impl Shared {
@@ -91,6 +93,7 @@ impl Shared {
             prompts: Mutex::new(VecDeque::new()),
             remote: Mutex::new(RemoteDir::default()),
             login_host: OnceLock::new(),
+            login_user: OnceLock::new(),
         })
     }
 
@@ -208,6 +211,14 @@ impl Shared {
 
     pub fn login_host(&self) -> Option<String> {
         self.login_host.get().cloned()
+    }
+
+    pub fn set_login_user(&self, user: &str) {
+        let _ = self.login_user.set(user.to_owned());
+    }
+
+    pub fn login_user(&self) -> Option<String> {
+        self.login_user.get().cloned()
     }
 
     pub fn set_remote_cwd(&self, path: &str) {

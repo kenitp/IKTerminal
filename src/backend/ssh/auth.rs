@@ -15,21 +15,28 @@ use crate::terminal::{PromptKind, Shared};
 const PASSWORD_ATTEMPTS: usize = 3;
 const DEFAULT_KEYS: [&str; 3] = ["id_ed25519", "id_ecdsa", "id_rsa"];
 
+/// Authenticates and returns the account the server accepted.
+///
+/// Without a configured user the account is asked for; the local account is never used.
 pub async fn authenticate(
     handle: &mut Handle<Client>,
     shared: &Shared,
     host: &HostConfig,
     password: Option<String>,
-) -> Result<(), String> {
-    let user = host.user.as_str();
+) -> Result<String, String> {
+    let user = if host.user.is_empty() {
+        ask_user(shared, host).await?
+    } else {
+        host.user.clone()
+    };
     if let Some(password) = password
         && handle
-            .authenticate_password(user, password)
+            .authenticate_password(&user, password)
             .await
             .map_err(|e| e.to_string())?
             .success()
     {
-        return Ok(());
+        return Ok(user);
     }
     let rsa_hash = handle
         .best_supported_rsa_hash()
@@ -38,16 +45,33 @@ pub async fn authenticate(
         .flatten()
         .flatten();
 
-    if !host.identities_only && try_agent(handle, user, rsa_hash).await {
-        return Ok(());
+    if !host.identities_only && try_agent(handle, &user, rsa_hash).await {
+        return Ok(user);
     }
-    if try_identity_files(handle, shared, host, rsa_hash).await? {
-        return Ok(());
+    if try_identity_files(handle, shared, host, &user, rsa_hash).await? {
+        return Ok(user);
     }
-    if try_keyboard_interactive(handle, shared, host).await? {
-        return Ok(());
+    if try_keyboard_interactive(handle, shared, host, &user).await? {
+        return Ok(user);
     }
-    try_password(handle, shared, host).await
+    try_password(handle, shared, host, &user).await?;
+    Ok(user)
+}
+
+async fn ask_user(shared: &Shared, host: &HostConfig) -> Result<String, String> {
+    let user = shared
+        .ask(
+            host.hostname.clone(),
+            "ユーザー名".to_owned(),
+            PromptKind::Text,
+        )
+        .await
+        .ok_or("認証がキャンセルされました")?;
+    let user = user.trim();
+    if user.is_empty() {
+        return Err("ユーザー名がありません".to_owned());
+    }
+    Ok(user.to_owned())
 }
 
 async fn try_agent(handle: &mut Handle<Client>, user: &str, rsa_hash: Option<HashAlg>) -> bool {
@@ -99,6 +123,7 @@ async fn try_identity_files(
     handle: &mut Handle<Client>,
     shared: &Shared,
     host: &HostConfig,
+    user: &str,
     rsa_hash: Option<HashAlg>,
 ) -> Result<bool, String> {
     for path in identity_candidates(host)
@@ -114,10 +139,7 @@ async fn try_identity_files(
             None
         };
         let res = handle
-            .authenticate_publickey(
-                host.user.as_str(),
-                PrivateKeyWithHashAlg::new(Arc::new(key), hash),
-            )
+            .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
             .await
             .map_err(|e| e.to_string())?;
         if res.success() {
@@ -149,9 +171,10 @@ async fn try_keyboard_interactive(
     handle: &mut Handle<Client>,
     shared: &Shared,
     host: &HostConfig,
+    user: &str,
 ) -> Result<bool, String> {
     let mut reply = handle
-        .authenticate_keyboard_interactive_start(host.user.as_str(), None)
+        .authenticate_keyboard_interactive_start(user, None)
         .await
         .map_err(|e| e.to_string())?;
     // Bounded so a misbehaving server cannot keep us prompting forever.
@@ -167,7 +190,7 @@ async fn try_keyboard_interactive(
                 let mut responses = Vec::with_capacity(prompts.len());
                 for p in prompts {
                     let title = if name.is_empty() {
-                        format!("{}@{}", host.user, host.hostname)
+                        format!("{user}@{}", host.hostname)
                     } else {
                         name.clone()
                     };
@@ -201,8 +224,9 @@ async fn try_password(
     handle: &mut Handle<Client>,
     shared: &Shared,
     host: &HostConfig,
+    user: &str,
 ) -> Result<(), String> {
-    let title = format!("{}@{}", host.user, host.hostname);
+    let title = format!("{user}@{}", host.hostname);
     for attempt in 0..PASSWORD_ATTEMPTS {
         let message = if attempt == 0 {
             "パスワード".to_owned()
@@ -214,7 +238,7 @@ async fn try_password(
             .await
             .ok_or("認証がキャンセルされました")?;
         let res = handle
-            .authenticate_password(host.user.as_str(), password)
+            .authenticate_password(user, password)
             .await
             .map_err(|e| e.to_string())?;
         if res.success() {

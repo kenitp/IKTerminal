@@ -752,7 +752,9 @@ impl App {
         let Some(target) = session.ssh_target().map(str::to_owned) else {
             return;
         };
-        let user = session.ssh_user().unwrap_or_default().to_owned();
+        let Some(user) = session.ssh_user() else {
+            return;
+        };
         let session_id = session.id;
         let title = session.title();
         let dir = session.remote_dir();

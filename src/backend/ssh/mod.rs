@@ -99,12 +99,13 @@ fn client_config(host: &HostConfig) -> Arc<client::Config> {
 }
 
 /// Opens a TCP (or tunneled) connection to `host` and authenticates.
+/// Returns the handle and the account the server accepted.
 async fn open(
     shared: &Arc<Shared>,
     host: &HostConfig,
     via: Option<&Handle<Client>>,
     password: Option<String>,
-) -> Result<Handle<Client>, String> {
+) -> Result<(Handle<Client>, String), String> {
     let client = Client::new(shared.clone(), &host.hostname, host.port);
     let rejection = client.rejection.clone();
     let config = client_config(host);
@@ -141,8 +142,8 @@ async fn open(
     };
     let mut handle =
         handshake.map_err(|e| rejection.lock().unwrap().take().unwrap_or_else(|| fail(&e)))?;
-    auth::authenticate(&mut handle, shared, host, password).await?;
-    Ok(handle)
+    let user = auth::authenticate(&mut handle, shared, host, password).await?;
+    Ok((handle, user))
 }
 
 async fn connect(
@@ -157,10 +158,11 @@ async fn connect(
     }
     let mut chain: Vec<Handle<Client>> = Vec::with_capacity(jumps.len());
     for hop in jumps {
-        let handle = open(shared, hop, chain.last(), None).await?;
+        let (handle, _) = open(shared, hop, chain.last(), None).await?;
         chain.push(handle);
     }
-    let handle = open(shared, target, chain.last(), password).await?;
+    let (handle, user) = open(shared, target, chain.last(), password).await?;
+    shared.set_login_user(&user);
     let connection = Connection {
         handle,
         _jumps: chain,
