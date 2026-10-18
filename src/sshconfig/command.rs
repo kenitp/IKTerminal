@@ -102,7 +102,7 @@ pub fn find_ssh_command(line: &str) -> Option<SshCommand> {
             at_command = false;
             continue;
         }
-        if is_prompt_token(token) {
+        if is_prompt_token(token) || (at_command && is_cwd_token(token)) {
             at_command = true;
             continue;
         }
@@ -136,11 +136,7 @@ pub fn ssh_outcome(command_line: &str, screen: &str) -> SshOutcome {
     if after.trim().is_empty() {
         return SshOutcome::Pending;
     }
-    let lower = after.to_ascii_lowercase();
-    if SSH_FAILURES.iter().any(|mark| lower.contains(mark)) {
-        return SshOutcome::Failed;
-    }
-    let local = local_prompt(command_line);
+    let local = local_prompt(command_line).trim();
     let lines: Vec<&str> = after
         .lines()
         .map(str::trim)
@@ -150,16 +146,31 @@ pub fn ssh_outcome(command_line: &str, screen: &str) -> SshOutcome {
         return SshOutcome::Pending;
     };
     if !local.is_empty() && last == local {
-        return SshOutcome::Failed;
-    }
-    for line in lines.iter().rev() {
-        if let Some(host) = remote_host(line)
-            && (local.is_empty() || *line != local)
+        if is_bare_prompt_line(last)
+            && let Some(host) = lines.iter().rev().nth(1).and_then(|line| status_host(line))
         {
             return SshOutcome::Connected {
                 host: host.to_owned(),
             };
         }
+        return SshOutcome::Failed;
+    }
+    if let Some(host) = shell_prompt_host(last) {
+        return SshOutcome::Connected { host };
+    }
+    if is_bare_prompt_line(last) {
+        let host = lines
+            .iter()
+            .rev()
+            .nth(1)
+            .and_then(|line| status_host(line))
+            .unwrap_or("")
+            .to_owned();
+        return SshOutcome::Connected { host };
+    }
+    let lower_last = last.to_ascii_lowercase();
+    if SSH_FAILURES.iter().any(|mark| lower_last.contains(mark)) {
+        return SshOutcome::Failed;
     }
     SshOutcome::Pending
 }
@@ -214,7 +225,6 @@ pub fn is_ip_host(host: &str) -> bool {
 }
 
 const SSH_FAILURES: &[&str] = &[
-    "permission denied",
     "connection refused",
     "connection timed out",
     "connection timeout",
@@ -229,6 +239,7 @@ const SSH_FAILURES: &[&str] = &[
     "connection reset",
     "kex_exchange_identification",
     "too many authentication failures",
+    "permission denied (",
     "no matching host key",
 ];
 
@@ -248,25 +259,155 @@ fn local_prompt(line: &str) -> &str {
     ""
 }
 
-fn remote_host(line: &str) -> Option<&str> {
-    let line = line.trim().strip_prefix('[').unwrap_or(line.trim());
+/// Hostname in a shell prompt. Empty when the prompt has no hostname.
+fn shell_prompt_host(line: &str) -> Option<String> {
+    if is_bare_prompt_line(line.trim()) {
+        return None;
+    }
+    let head = prompt_body(line)?;
+    if head.is_empty() || head.eq_ignore_ascii_case("ps") {
+        return Some(String::new());
+    }
+    if let Some(host) = extract_host(head) {
+        return Some(host.to_owned());
+    }
+    if head.contains('\\') || head.contains('~') || head.contains('@') || head.contains(':') {
+        return Some(String::new());
+    }
+    None
+}
+
+fn prompt_body(line: &str) -> Option<&str> {
+    let line = line.trim();
+    let line = line.strip_prefix('[').unwrap_or(line);
+    if let Some(head) = rprompt_body(line) {
+        return Some(head);
+    }
+    let end = line.chars().next_back()?;
+    if !matches!(end, '$' | '#' | '>') && end != '%' {
+        return None;
+    }
+    if end == '%'
+        && line
+            .chars()
+            .rev()
+            .nth(1)
+            .is_some_and(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    let head = &line[..line.len() - end.len_utf8()];
+    Some(head.trim().trim_end_matches(']'))
+}
+
+/// Prompt text before a right-side prompt (`user@host:~$          15:04`).
+fn rprompt_body(line: &str) -> Option<&str> {
+    for (index, ch) in line.char_indices() {
+        if !matches!(ch, '$' | '#' | '>') && ch != '%' {
+            continue;
+        }
+        if ch == '%'
+            && line[..index]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_digit())
+        {
+            continue;
+        }
+        let rest = &line[index + ch.len_utf8()..];
+        if rest.starts_with("  ") && !rest.trim().is_empty() {
+            let head = line[..index].trim().trim_end_matches(']');
+            if head.is_empty()
+                || head.contains('@')
+                || head.contains('~')
+                || head.contains(':')
+                || head.contains('\\')
+            {
+                return Some(head);
+            }
+        }
+    }
+    None
+}
+
+fn is_bare_prompt_line(line: &str) -> bool {
+    let line = line.trim();
+    if matches!(line, "$" | "#" | "%" | ">") {
+        return true;
+    }
+    let mut chars = line.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    is_prompt_glyph(first) && chars.all(|c| c.is_whitespace() || c == '~' || c == '/')
+}
+
+fn is_prompt_glyph(ch: char) -> bool {
+    matches!(ch, '❯' | '➜' | 'λ' | '›' | '»' | '≻')
+}
+
+/// Host on the status line above a bare prompt (`user@host in ~` then `❯`).
+fn status_host(line: &str) -> Option<&str> {
+    let line = line.trim();
+    if line.to_ascii_lowercase().contains("password") {
+        return None;
+    }
+    if !(line.contains(" in ") || line.contains('~') || line.contains(':')) {
+        return None;
+    }
     let (user, rest) = line.split_once('@')?;
     if user.is_empty() || user.chars().any(|c| c.is_whitespace() || c == '/') {
         return None;
     }
-    let end = line.chars().rev().find(|c| !c.is_whitespace())?;
-    if !matches!(end, '$' | '#' | '%' | '>') {
+    let host = host_token(rest);
+    valid_host_token(host).then_some(host)
+}
+
+fn extract_host(head: &str) -> Option<&str> {
+    let head = head.trim().trim_end_matches(']');
+    if head.is_empty() || head.eq_ignore_ascii_case("ps") || head.contains('\\') {
         return None;
     }
-    let host = rest
-        .split([':', ' ', ']'])
-        .next()
-        .filter(|host| !host.is_empty())?;
-    if host.chars().any(|c| c.is_whitespace() || c == '/') {
-        None
-    } else {
-        Some(host)
+    if let Some((user, rest)) = head.split_once('@') {
+        if user.is_empty() || user.chars().any(|c| c.is_whitespace() || c == '/') {
+            return None;
+        }
+        let host = host_token(rest);
+        return valid_host_token(host).then_some(host);
     }
+    let host = host_token(head);
+    valid_host_token(host).then_some(host)
+}
+
+fn host_token(rest: &str) -> &str {
+    let rest = rest.trim_start_matches('[');
+    if let Some((host, _)) = rest.split_once(']') {
+        return host;
+    }
+    let token = rest.split([' ', ']']).next().unwrap_or(rest);
+    if let Some((host, path)) = token.rsplit_once(':')
+        && (path.is_empty() || path.starts_with('~') || path.starts_with('/'))
+    {
+        return host;
+    }
+    token
+}
+
+fn valid_host_token(host: &str) -> bool {
+    if host.is_empty() || host.len() > 253 {
+        return false;
+    }
+    if is_ip_host(host) {
+        return true;
+    }
+    let Some(first) = host.chars().next() else {
+        return false;
+    };
+    first.is_ascii_alphanumeric()
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        && host.chars().any(|c| c.is_ascii_alphabetic())
 }
 
 /// Text that follows the command, including when the grid wrapped it.
@@ -547,12 +688,24 @@ fn is_redirect(token: &str) -> bool {
     matches!(rest, ">" | ">>" | "<" | "<<" | ">&" | "<&")
 }
 
-/// A prompt fragment such as `C:\dir>` or `user@host:~$`, not a redirection operator.
+/// A prompt fragment such as `C:\dir>`, `user@host:~$`, or `❯`, not a redirection operator.
 fn is_prompt_token(token: &str) -> bool {
     if is_redirect(token) {
         return false;
     }
-    token.ends_with(['>', '$', '#', '%'])
+    if token.ends_with(['>', '$', '#', '%']) {
+        return true;
+    }
+    let mut chars = token.chars();
+    let Some(ch) = chars.next() else {
+        return false;
+    };
+    chars.next().is_none() && is_prompt_glyph(ch)
+}
+
+/// `~` or `~/dir` in a prompt (`➜  ~`), while a command is expected.
+fn is_cwd_token(token: &str) -> bool {
+    token == "~" || token.starts_with("~/")
 }
 
 fn tokenize(line: &str) -> Vec<String> {
@@ -760,5 +913,184 @@ mod tests {
         apply_connected_host(&mut short, "10.0.0.9");
         assert_eq!(short.destination, "nas");
         assert_eq!(short.hostname, "10.0.0.9");
+
+        let mut unnamed = find_ssh_command("ssh 10.0.0.8").unwrap();
+        apply_connected_host(&mut unnamed, "");
+        assert_eq!(unnamed.destination, "10.0.0.8");
+        assert_eq!(unnamed.hostname, "10.0.0.8");
+    }
+
+    fn judge(line: &str, after: &str) -> SshOutcome {
+        ssh_outcome(line, &format!("{line}\n{after}"))
+    }
+
+    #[test]
+    fn ssh_after_common_local_prompts() {
+        let lines = [
+            r"PS C:\Users\a> ssh 10.0.0.8",
+            r"C:\Users\a> ssh 10.0.0.8",
+            "kenichi@desktop:~$ ssh 10.0.0.8",
+            "$ ssh 10.0.0.8",
+            "❯ ssh 10.0.0.8",
+            "➜  ~ ssh 10.0.0.8",
+            "user@host ~> ssh 10.0.0.8",
+            "pi@raspberrypi:~# ssh 10.0.0.8",
+            "λ ssh 10.0.0.8",
+        ];
+        for line in lines {
+            let cmd = find_ssh_command(line).unwrap_or_else(|| panic!("missed ssh in {line}"));
+            assert_eq!(cmd.destination, "10.0.0.8", "{line}");
+        }
+        assert!(find_ssh_command("❯ echo ssh 10.0.0.8").is_none());
+        assert!(find_ssh_command("➜ ssh-keygen -t ed25519").is_none());
+        assert!(find_ssh_command("echo ~ ssh 10.0.0.8").is_none());
+    }
+
+    #[test]
+    fn remote_shell_prompts_count_as_connected() {
+        let line = r"PS C:\Users\a> ssh pi@192.168.1.20";
+        let cases = [
+            ("pi@raspberrypi:~$ ", "raspberrypi"),
+            ("[pi@raspberrypi ~]$", "raspberrypi"),
+            ("pi@raspberrypi ~ %", "raspberrypi"),
+            ("pi@raspberrypi ~>", "raspberrypi"),
+            ("pi@raspberrypi:~$          15:04", "raspberrypi"),
+            ("raspberrypi:~$", "raspberrypi"),
+            ("raspberrypi:~#", "raspberrypi"),
+            ("raspberrypi:~ pi$", "raspberrypi"),
+            ("pi@192.168.1.20:~$", "192.168.1.20"),
+            ("pi@fe80::1:~$", "fe80::1"),
+            ("router#", "router"),
+            (r"C:\Users\pi>", ""),
+            (r"PS C:\Users\admin>", ""),
+            ("#", ""),
+            ("$", ""),
+        ];
+        for (prompt, host) in cases {
+            assert_eq!(
+                judge(line, &format!("Last login: Mon Oct 12\n{prompt}")),
+                SshOutcome::Connected {
+                    host: host.to_owned()
+                },
+                "{prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn starship_and_oh_my_zsh_prompts() {
+        let bash = "kenichi@desktop:~$ ssh pi@192.168.1.20";
+        assert_eq!(
+            judge(bash, "pi@raspberrypi in ~\n❯"),
+            SshOutcome::Connected {
+                host: "raspberrypi".to_owned()
+            }
+        );
+        assert_eq!(
+            judge(bash, "➜  ~"),
+            SshOutcome::Connected {
+                host: String::new()
+            }
+        );
+
+        let starship = "❯ ssh pi@192.168.1.20";
+        assert_eq!(
+            judge(starship, "pi@raspberrypi in ~\n❯"),
+            SshOutcome::Connected {
+                host: "raspberrypi".to_owned()
+            }
+        );
+        assert_eq!(
+            judge(
+                starship,
+                "ssh: connect to host 192.168.1.20 port 22: Connection refused\n❯"
+            ),
+            SshOutcome::Failed
+        );
+    }
+
+    #[test]
+    fn password_retry_stays_pending_until_the_shell() {
+        let line = "kenichi@desktop:~$ ssh pi@192.168.1.20";
+        let retry = "\
+pi@192.168.1.20's password:
+Permission denied, please try again.
+pi@192.168.1.20's password:";
+        assert_eq!(judge(line, retry), SshOutcome::Pending);
+        let ok = format!("{retry}\nLast login: Mon Oct 12\npi@raspberrypi:~$");
+        assert_eq!(
+            judge(line, &ok),
+            SshOutcome::Connected {
+                host: "raspberrypi".to_owned()
+            }
+        );
+        assert_eq!(
+            judge(
+                line,
+                "Are you sure you want to continue connecting (yes/no/[fingerprint])?"
+            ),
+            SshOutcome::Pending
+        );
+    }
+
+    #[test]
+    fn banner_text_does_not_hide_or_fake_a_prompt() {
+        let line = "kenichi@desktop:~$ ssh pi@192.168.1.20";
+        assert_eq!(
+            judge(
+                line,
+                "Notice: idle sessions get a connection closed.\npi@raspberrypi:~$"
+            ),
+            SshOutcome::Connected {
+                host: "raspberrypi".to_owned()
+            }
+        );
+        assert_eq!(
+            judge(line, "Mail the admin@example.com team.\nkenichi@desktop:~$"),
+            SshOutcome::Failed
+        );
+        assert_eq!(judge(line, "Downloading 100%"), SshOutcome::Pending);
+        assert_eq!(
+            judge("ssh pi@192.168.1.20", "Downloading 100%"),
+            SshOutcome::Pending
+        );
+        assert_eq!(
+            judge(
+                line,
+                "Notice: idle sessions get a connection closed.\nLast login: Mon Oct 12"
+            ),
+            SshOutcome::Pending
+        );
+    }
+
+    #[test]
+    fn connection_failure_and_local_prompt_stay_failed() {
+        let line = r"PS C:\Users\a> ssh pi@192.168.1.20";
+        assert_eq!(judge(line, r"PS C:\Users\a>"), SshOutcome::Failed);
+        assert_eq!(
+            judge(
+                line,
+                "ssh: connect to host 192.168.1.20 port 22: Connection refused"
+            ),
+            SshOutcome::Failed
+        );
+        assert_eq!(
+            judge(
+                line,
+                "ssh: connect to host 192.168.1.20 port 22: Connection timed out"
+            ),
+            SshOutcome::Failed
+        );
+        assert_eq!(
+            judge(line, "Permission denied (publickey).\nPS C:\\Users\\a>"),
+            SshOutcome::Failed
+        );
+        assert_eq!(
+            judge(
+                line,
+                "pi@192.168.1.20: Permission denied (publickey,password)."
+            ),
+            SshOutcome::Failed
+        );
     }
 }
