@@ -178,12 +178,14 @@ UI コンポーネントは状態を直接変更せず、結果 (`*Action` / `*R
   2. `target/dist/IkTerminal-<version>-linux-<arch>.tar.gz` にバイナリをまとめる (Ver.Up 用)。
   3. `packaging/linux/` の desktop / maintainer scripts と `assets/icon-*.png` から `.deb` を組み立て、`target/dist/IkTerminal-<version>-linux-<arch>.deb` を出力する。`dpkg-deb` が必要。
   4. 実行時は libxcb、libxkbcommon、libxkbcommon-x11、OpenGL を動的に読む。
-- 起動引数は `launch.rs` が `Launch { directory, execute }` にまとめる。`-e` は初期ローカルタブの `ShellSpec` になる。単一インスタンス転送はディレクトリ指定のみ。`-e` は既存インスタンスがいても別ウィンドウにする。
+- `packaging/linux/postinst` は `update-alternatives --install` で `x-terminal-emulator` に優先度 30 で登録する (`prerm` で削除)。他のターミナル (gnome-terminal / xfce4-terminal は優先度 40) より低いため、インストールしただけでは既定にならない。`scripts/set-default-terminal.sh` が `update-alternatives --set` で明示的に切り替える。GNOME は `org.gnome.desktop.default-applications.terminal` の `exec` が `x-terminal-emulator` 固定で、Ctrl+Alt+T もこれを使うため、追加のキーバインド設定は不要。
+- 起動引数は `launch.rs` が `Launch { directory, execute }` にまとめる。`-e` は初期ローカルタブの `ShellSpec` になる。単一インスタンス転送はディレクトリ指定のみ。`-e` は既存インスタンスがいても別ウィンドウにする。`--version` / `-V` は `from_args` より前の `version_requested` で検出し、`instance::attach` を呼ばずに終了する。
 - apt リポジトリ (GitHub Pages)
   - 公開鍵は `packaging/linux/apt/ikterminal.gpg`。秘密鍵はリポジトリに入れず、GitHub secret `APT_GPG_PRIVATE_KEY` に置く。鍵の作成は `scripts/generate-apt-key.sh`。
   - `scripts/apt-repo.sh` が `pool/` / `dists/stable/` と署名 (`InRelease` / `Release.gpg`) を組み立てる。
   - Pages は `gh-pages` ブランチから配信する。URL は `https://kenitp.github.io/IKTerminal`。
 - GitHub Actions
   - `Build` は push と pull request で clippy とテストだけ行う (配布物は作らない)。`concurrency` で同 ref の途中実行を打ち切る。
-  - `Release` は配布が必要なときだけ `package.yml` でインストーラ / `.deb` / `.tar.gz` を作る。Rust は `Swatinem/rust-cache`、Linux の apt 依存と Windows の Inno Setup もキャッシュする。Rust のキャッシュは `Build` 用と `Release` 用で分け、`Release` では依存クレートのリリースビルドを再利用する。
+  - `package.yml` の matrix は `ubuntu-latest` (配布物を作る)、`ubuntu-26.04` (ビルド検証のみ、`matrix.publish: false` で配布物を作らない)、`windows-latest` の 3 つ。Linux 配布物は `ubuntu-latest` だけが作る (同じバイナリ名が複数ジョブから重複して上がるのを避けるため)。
+  - `Release` は配布が必要なときだけ `package.yml` でインストーラ / `.deb` / `.tar.gz` を作る。Rust は `Swatinem/rust-cache`、Linux の apt 依存と Windows の Inno Setup もキャッシュする。Rust のキャッシュは `matrix.os` ごと、かつ `Build` 用と `Release` 用で分け、`Release` では依存クレートのリリースビルドを再利用する。
   - `Release` は `main` への push で動く。`version` が push 前のコミットと異なり、GitHub Release `v<version>` が無いとき、先にそのコミットへタグを push してから Release を作る。コミット SHA を `target_commitish` にすると、そのコミットがブランチ先頭やタグでなく、かつワークフローファイルの変更を含むとき、`GITHUB_TOKEN` では作成が拒否される。失敗した実行の再実行と、手動実行は、Release が無いときに作る。続けて `apt` ジョブが `.deb` を `gh-pages` の apt リポジトリへ取り込む。

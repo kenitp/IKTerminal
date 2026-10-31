@@ -6,6 +6,9 @@
 //!
 //! `ikterminal -e <program> [args...]` opens the initial tab with that command
 //! (for xdg-terminal-exec and similar).
+//!
+//! `ikterminal --version` / `-V` prints the version to stdout and exits before
+//! any window or single-instance handoff happens.
 
 use std::path::{Path, PathBuf};
 
@@ -21,6 +24,15 @@ pub struct Launch {
 pub fn from_args() -> Result<Launch, String> {
     let current = std::env::current_dir().unwrap_or_default();
     parse(std::env::args().skip(1).collect(), &current)
+}
+
+/// Checked before `from_args` so `--version` never triggers single-instance handoff.
+pub fn version_requested() -> bool {
+    wants_version(&std::env::args().skip(1).collect::<Vec<_>>())
+}
+
+fn wants_version(args: &[String]) -> bool {
+    matches!(args.first().map(String::as_str), Some("--version" | "-V"))
 }
 
 fn parse(args: Vec<String>, current: &Path) -> Result<Launch, String> {
@@ -121,5 +133,13 @@ mod tests {
     #[test]
     fn execute_flag_requires_program() {
         assert!(parse(vec!["-e".into()], Path::new("/")).is_err());
+    }
+
+    #[test]
+    fn version_flag_is_recognized() {
+        assert!(wants_version(&["--version".into()]));
+        assert!(wants_version(&["-V".into()]));
+        assert!(!wants_version(&[]));
+        assert!(!wants_version(&["-e".into()]));
     }
 }

@@ -16,6 +16,10 @@ mod ui;
 mod update;
 
 fn main() -> eframe::Result {
+    if launch::version_requested() {
+        println!("ikterminal {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     let launch = launch::from_args();
     let incoming = match instance::attach(&launch) {
         instance::Role::Forwarded => return Ok(()),

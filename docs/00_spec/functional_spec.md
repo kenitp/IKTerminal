@@ -41,6 +41,7 @@ OS のタイトルバーは出さない。タブバーの空きをドラッグ�
 - 設定で既定シェルを選択するか、任意のコマンドラインを指定できる。
 - 作業ディレクトリは、起動引数で指定したフォルダ。引数がなければホームディレクトリ。同じウィンドウで開くローカルタブは同じフォルダを使う。
 - 起動引数は `ikt [フォルダ]`、または `ikterminal -e <program> [args...]`。`.` はそのプロセスのカレントフォルダ (エクスプローラーのアドレスバーで `ikt .` と打ったとき、表示中のフォルダになる)。`-e` は初期タブをそのコマンドで開く (xdg-terminal-exec 用)。
+- `ikterminal --version` / `-V` はバージョンを標準出力に表示してすぐ終了する。ウィンドウは開かず、既存インスタンスへの転送も行わない。
 - すでに起動しているときは、新しいプロセスはウィンドウを開かず終了する。フォーカスのあるウィンドウ (無ければ最初のウィンドウ) にローカルタブを追加し、そのウィンドウを前面に出す。追加したフォルダが、その後そのウィンドウで開くローカルタブの作業ディレクトリになる。`-e` のときは既存インスタンスへ転送せず、別ウィンドウを開く。
 - シェルが終了するとタブを閉じる。
 - ローカルタブは `フォルダ · シェル名` と表示する。フォルダはシェルプロセスの作業ディレクトリの末尾で、`cd` すると追従する。マウスオーバーでフルパスを表示する。ウィンドウタイトルも同じ表記にする。WSL は起動時の Windows 側フォルダのままである。
@@ -176,14 +177,14 @@ OS のタイトルバーは出さない。タブバーの空きをドラッグ�
     - インストール先をユーザーの PATH に加え、`ikt.exe` を App Paths に登録する。エクスプローラーのアドレスバーで `ikt .` とすると、そのフォルダのタブを開く。起動中なら既存のウィンドウに追加する。
 - Linux
   - Ubuntu / Debian 向けに `IkTerminal-<version>-linux-<arch>.deb` を配布する。`sudo apt install ./....deb` で入れる。
-  - `.deb` は `/usr/bin/ikterminal` と symlink `ikt`、アプリメニュー用 `.desktop`、xdg-terminal-exec 用エントリ、アイコンを置き、`update-alternatives` で `x-terminal-emulator` に登録する。
+  - `.deb` は `/usr/bin/ikterminal` と symlink `ikt`、アプリメニュー用 `.desktop`、xdg-terminal-exec 用エントリ、アイコンを置き、`update-alternatives` で `x-terminal-emulator` に (優先度 30 で) 登録する。既定にするかはユーザーが選ぶ: `scripts/set-default-terminal.sh` で `x-terminal-emulator` を IkTerminal に切り替えられる。GNOME は Ctrl+Alt+T が `x-terminal-emulator -e` を実行するため、切り替えるだけでそのまま使える。
   - 同じリポジトリの GitHub Pages (`https://kenitp.github.io/IKTerminal`) に GPG 署名付き apt リポジトリを公開する。利用者は sources を追加したあと `apt update` / `apt upgrade` で更新できる。
   - アプリ内 Ver.Up 用に、同じバイナリの `IkTerminal-<version>-linux-<arch>.tar.gz` も配布する。
   - 実行時に libxcb、libxkbcommon、libxkbcommon-x11、OpenGL が必要 (パッケージ依存として宣言する)。
   - クリップボードは X11 と Wayland。ファイル選択は xdg-desktop-portal。
   - 日本語表示には Noto Sans CJK などのシステムフォントを使う。
 - CI
-  - push と pull request で Windows と Linux の clippy / テストを行う。配布物の生成は Release 時だけ行う。
+  - push と pull request で Windows、Ubuntu (最新の LTS と次期 LTS の両方) の clippy / テストを行う。配布物の生成は Release 時だけ行う。
   - `main` へ push したとき、`version` が直前の `main` と異なり、GitHub Release `v<version>` が無ければ、そのコミットのタグを先に作ってから Release を作る。同じコミットの再実行、または手動実行でも、Release が無ければ作る。Release 後、`.deb` を `gh-pages` の apt リポジトリへ取り込む。
 
 リリースビルドは起動後に GitHub の最新リリースを確認する。設定の「更新を確認」でも同じ確認をすぐ行う。実行中より新しいバージョンで、対象の配布物の SHA-256 が Release の `digest` と一致するとき、画面に `Ver.Up` を出す。押すと更新して終了する。「今はしない」を選ぶとその起動では更新しない。終了しただけでは更新しない。設定では、最新なら「最新です」、新しい版なら「Ver.Up」を出して同じ更新を始める、確認できないときは「確認できませんでした」と出す。ウィンドウを隠しているときは、タスクトレイのツールチップにも新しいバージョンを出す。
