@@ -75,18 +75,51 @@ async fn ask_user(shared: &Shared, host: &HostConfig) -> Result<String, String> 
 }
 
 async fn try_agent(handle: &mut Handle<Client>, user: &str, rsa_hash: Option<HashAlg>) -> bool {
-    #[cfg(windows)]
-    let agent = match AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await {
-        Ok(a) => Some(a.dynamic()),
-        Err(_) => AgentClient::connect_pageant()
-            .await
-            .ok()
-            .map(|a| a.dynamic()),
-    };
-    #[cfg(not(windows))]
-    let agent = AgentClient::connect_env().await.ok().map(|a| a.dynamic());
+    for mut agent in agent_clients().await {
+        if authenticate_with_agent(handle, user, rsa_hash, &mut agent).await {
+            return true;
+        }
+    }
+    false
+}
 
-    let Some(mut agent) = agent else { return false };
+async fn agent_clients()
+-> Vec<AgentClient<Box<dyn russh::keys::agent::client::AgentStream + Send + Unpin>>> {
+    let mut agents = Vec::new();
+    #[cfg(windows)]
+    {
+        if let Ok(agent) = AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await {
+            agents.push(agent.dynamic());
+        } else if let Ok(agent) = AgentClient::connect_pageant().await {
+            agents.push(agent.dynamic());
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let env_sock = std::env::var_os("SSH_AUTH_SOCK").map(std::path::PathBuf::from);
+        if let Ok(agent) = AgentClient::connect_env().await {
+            agents.push(agent.dynamic());
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(path) = crate::backend::bitwarden::agent_socket()
+            && env_sock.as_ref().is_none_or(|sock| sock != &path)
+            && let Ok(agent) = AgentClient::connect_uds(&path).await
+        {
+            agents.push(agent.dynamic());
+        }
+    }
+    agents
+}
+
+async fn authenticate_with_agent<S>(
+    handle: &mut Handle<Client>,
+    user: &str,
+    rsa_hash: Option<HashAlg>,
+    agent: &mut AgentClient<S>,
+) -> bool
+where
+    S: russh::keys::agent::client::AgentStream + Unpin + Send,
+{
     let Ok(identities) = agent.request_identities().await else {
         return false;
     };
@@ -100,7 +133,7 @@ async fn try_agent(handle: &mut Handle<Client>, user: &str, rsa_hash: Option<Has
             None
         };
         if let Ok(res) = handle
-            .authenticate_publickey_with(user, key, hash, &mut agent)
+            .authenticate_publickey_with(user, key, hash, agent)
             .await
             && res.success()
         {

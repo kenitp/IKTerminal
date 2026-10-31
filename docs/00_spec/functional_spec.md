@@ -61,7 +61,7 @@ OS のタイトルバーは出さない。タブバーの空きをドラッグ�
 - ホスト鍵は `~/.ssh/known_hosts` で検証する。
   - 未登録の場合はフィンガープリントを表示して確認し、承認されたら登録する。
   - 鍵が変更されている場合は警告する。ユーザーが「削除して接続」を選んだときだけ、そのホストの同じ方式の古い登録を削除し、受信した鍵を登録して接続する。断った場合は接続しない。削除前のファイルは `known_hosts.bak` に残す。
-- 設定「Bitwarden」が有効 (既定) で Bitwarden がインストール済みかつ未起動のとき、認証の前にデスクトップアプリを起動し、エージェントの名前付きパイプが出るまで少し待つ。インストーラ版は `Bitwarden.exe`、Microsoft Store 版は登録されたアプリ ID で起動する。どちらも無い場合は何もしない。Windows ではエージェントは `\\.\pipe\openssh-ssh-agent` を使うため、OpenSSH Authentication Agent サービスは無効にしておく。
+- 設定「Bitwarden」が有効 (既定) で Bitwarden がインストール済みかつ未起動のとき、認証の前にデスクトップアプリを起動し、エージェントが応答するまで少し待つ。起動できない場合は何もしない。Windows はインストーラ版の `Bitwarden.exe` か Microsoft Store のアプリ ID で起動し、`\\.\pipe\openssh-ssh-agent` を待つ。OpenSSH Authentication Agent サービスは無効にしておく。Linux は `/opt/Bitwarden/bitwarden`、`bitwarden`、`/snap/bin/bitwarden`、または Flatpak の `com.bitwarden.desktop` で起動し、ソケットが接続を受け付けるまで待つ。ソケットは `BITWARDEN_SSH_AUTH_SOCK`、無ければ `~/.bitwarden-ssh-agent.sock`。Snap は `~/snap/bitwarden/current/.bitwarden-ssh-agent.sock`、Flatpak は `~/.var/app/com.bitwarden.desktop/data/.bitwarden-ssh-agent.sock`。Linux の認証は `SSH_AUTH_SOCK` のあと、それと別パスなら Bitwarden のソケットにも繋ぐ。
 - ユーザーは接続先の `user@` か config の `User` を使う。どちらも無ければ認証の前にユーザー名を尋ねる。ローカルのアカウント名は使わない。
 - 認証は次の順で試行する。LAN スキャンから接続した場合は、入力したパスワードを最初に試す。
   1. SSH エージェント (OpenSSH エージェント、Bitwarden のエージェント、Pageant)。`IdentitiesOnly yes` の場合は使わない。
