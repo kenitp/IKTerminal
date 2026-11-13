@@ -1006,9 +1006,7 @@ impl App {
                     Some(TabAction::ToggleSidebar) => {
                         self.desks[index].show_sidebar = !self.desks[index].show_sidebar;
                     }
-                    Some(TabAction::ToggleSftp) => {
-                        self.desks[index].show_sftp = !self.desks[index].show_sftp;
-                    }
+                    Some(TabAction::ToggleSftp) => self.toggle_sftp(index),
                     Some(TabAction::Settings) => {
                         self.settings_desk = self.desks[index].id;
                         self.settings_dialog = Some(SettingsDialog::new(&self.settings));
@@ -1076,6 +1074,7 @@ impl App {
             return;
         };
         let Some(client) = session.sftp() else { return };
+        let start = session.remote_dir().cwd;
         let view = sftp_views.entry(session.id).or_default();
         let frame = Frame::new()
             .fill(theme::PANEL)
@@ -1085,7 +1084,25 @@ impl App {
             .default_size(330.0)
             .size_range(240.0..=640.0)
             .frame(frame)
-            .show(ui, |ui| view.show(ui, client));
+            .show(ui, |ui| view.show(ui, client, start.as_deref()));
+    }
+
+    fn toggle_sftp(&mut self, index: usize) {
+        let opening = !self.desks[index].show_sftp;
+        self.desks[index].show_sftp = opening;
+        if !opening {
+            return;
+        }
+        let id = {
+            let desk = &self.desks[index];
+            desk.sessions
+                .get(desk.active)
+                .filter(|session| session.sftp().is_some())
+                .map(|session| session.id)
+        };
+        if let Some(id) = id {
+            self.desks[index].sftp_views.entry(id).or_default().reopen();
+        }
     }
 
     fn central(&mut self, ui: &mut Ui, index: usize, dialogs_open: bool) {

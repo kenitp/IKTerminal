@@ -26,7 +26,12 @@ pub struct SftpView {
 }
 
 impl SftpView {
-    pub fn show(&mut self, ui: &mut Ui, client: &SftpClient) {
+    /// Next time the panel is shown, list `start` again instead of the previous folder.
+    pub fn reopen(&mut self) {
+        self.opened = false;
+    }
+
+    pub fn show(&mut self, ui: &mut Ui, client: &SftpClient, start: Option<&str>) {
         if !client.is_ready() {
             ui.add_space(12.0);
             ui.label(RichText::new("SSH 接続の確立を待っています...").color(theme::TEXT_DIM));
@@ -34,7 +39,11 @@ impl SftpView {
         }
         if !self.opened {
             self.opened = true;
-            client.open_dir(".".to_owned());
+            let path = start
+                .filter(|path| !path.is_empty())
+                .unwrap_or(".")
+                .to_owned();
+            client.open_dir(path);
         }
 
         let (cwd, entries, loading, error) = {
